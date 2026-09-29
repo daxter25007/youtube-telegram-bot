@@ -2,17 +2,17 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.services.youtube.formats import QualityOption
+from app.services.media.models import DownloadOption
 
 
-def quality_keyboard(request_id: str, qualities: list[QualityOption]) -> InlineKeyboardMarkup:
+def quality_keyboard(request_id: str, options: list[DownloadOption]) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(
-                text=f"{quality.height}p",
-                callback_data=f"quality:{request_id}:{quality.height}",
+                text=option.label,
+                callback_data=f"media:{request_id}:{option.key}",
             )
         ]
-        for quality in qualities
+        for option in options
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
