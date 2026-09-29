@@ -2,6 +2,8 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
+import sqlalchemy as sa
+
 
 def load_migration() -> ModuleType:
     path = Path("alembic/versions/20260929_0002_generalize_media_sources.py")
@@ -50,6 +52,14 @@ def test_media_migration_renames_and_backfills_without_losing_youtube_rows(
     assert "source = 'youtube'" in executed
     assert "media_kind = 'video'" in executed
     assert "video_" in executed
+    assert any(
+        name == "alter_column"
+        and value[0] == "downloads"
+        and value[1] == "source_media_id"
+        and isinstance(value[2].get("type_"), sa.String)
+        and value[2]["type_"].length == 128
+        for name, value in operations.calls
+    )
 
 
 def test_media_migration_downgrade_restores_youtube_column_names(monkeypatch) -> None:

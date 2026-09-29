@@ -24,6 +24,14 @@ def upgrade() -> None:
     op.alter_column("download_requests", "youtube_video_id", new_column_name="source_media_id")
 
     for table in ("downloads", "download_requests"):
+        op.alter_column(
+            table,
+            "source_media_id",
+            existing_type=sa.String(length=64),
+            type_=sa.String(length=128),
+        )
+
+    for table in ("downloads", "download_requests"):
         op.add_column(table, sa.Column("source", sa.String(length=32), nullable=True))
         op.add_column(table, sa.Column("media_kind", sa.String(length=16), nullable=True))
         if table == "downloads":

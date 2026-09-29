@@ -17,9 +17,11 @@ from app.bot.keyboards.admin import (
 )
 from app.bot.states.admin import AddChannelState
 from app.config import Settings
+from app.database.models import Download
 from app.database.repositories.channels import ChannelRepository
 from app.database.repositories.downloads import DownloadRepository
 from app.database.repositories.users import UserRepository
+from app.services.media.models import MediaSource
 from app.services.queue import DownloadQueue
 from app.services.statistics import StatisticsService
 from app.utils.auth import is_admin
@@ -30,6 +32,17 @@ router = Router(name="admin")
 
 def _authorized(user_id: int, settings: Settings) -> bool:
     return is_admin(user_id, settings.admin_ids)
+
+
+def _download_summary_line(download: Download) -> str:
+    source = "YouTube" if download.source is MediaSource.YOUTUBE else "TikTok"
+    if download.requested_quality is not None:
+        option = f"{download.requested_quality}p"
+    elif download.requested_option == "best_video":
+        option = "лучшее качество"
+    else:
+        option = download.requested_option.replace("_", " ")
+    return f"#{download.id} {source} · {option} — {download.status.value}"
 
 
 @router.message(Command("admin"))
@@ -95,12 +108,7 @@ async def admin_callbacks(
         await callback.message.answer(f"👥 Последние пользователи:\n{text}")
     elif action == "admin:downloads":
         downloads = await DownloadRepository(session).recent()
-        text = (
-            "\n".join(
-                f"#{item.id} {item.requested_quality}p — {item.status.value}" for item in downloads
-            )
-            or "Загрузок нет."
-        )
+        text = "\n".join(_download_summary_line(item) for item in downloads) or "Загрузок нет."
         await callback.message.answer(f"📥 Последние загрузки:\n{text}")
     elif action == "admin:channels":
         await callback.message.edit_text("📢 Обязательные каналы", reply_markup=channels_menu())
