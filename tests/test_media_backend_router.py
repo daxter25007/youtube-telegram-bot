@@ -57,9 +57,7 @@ def media_request(source: MediaSource) -> MediaDownloadRequest:
 def media_package(tmp_path: Path) -> MediaPackage:
     path = tmp_path / "media.mp4"
     path.write_bytes(b"video")
-    return MediaPackage(
-        artifacts=(MediaArtifact(path=path, media_kind=MediaKind.VIDEO),)
-    )
+    return MediaPackage(artifacts=(MediaArtifact(path=path, media_kind=MediaKind.VIDEO),))
 
 
 @pytest.mark.asyncio
@@ -144,9 +142,7 @@ async def test_non_retryable_backend_error_does_not_fallback(
         raise AssertionError("fallback must not be called")
 
     with pytest.raises(BackendError) as raised:
-        await router.download(
-            media_request(MediaSource.TIKTOK), tmp_path, progress, on_fallback
-        )
+        await router.download(media_request(MediaSource.TIKTOK), tmp_path, progress, on_fallback)
 
     assert raised.value.kind is kind
     assert ytdlp.calls == 0

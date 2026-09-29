@@ -154,9 +154,7 @@ class CobaltBackend:
             try:
                 prepared = await self.client.prepare(request.url)
                 allowed_origin = (
-                    self.client.base_url
-                    if prepared.kind is CobaltResponseKind.TUNNEL
-                    else None
+                    self.client.base_url if prepared.kind is CobaltResponseKind.TUNNEL else None
                 )
                 validated = await self.validator.validate(
                     prepared.url,
@@ -172,6 +170,11 @@ class CobaltBackend:
             except UnsafeRemoteUrlError as exc:
                 raise BackendError(
                     "Cobalt вернул небезопасный URL",
+                    kind=BackendErrorKind.RETRYABLE,
+                ) from exc
+            except OSError as exc:
+                raise BackendError(
+                    "Не удалось проверить media URL Cobalt",
                     kind=BackendErrorKind.RETRYABLE,
                 ) from exc
 
@@ -204,9 +207,20 @@ class CobaltBackend:
                         "Cobalt redirect небезопасен",
                         kind=BackendErrorKind.RETRYABLE,
                     ) from exc
+                except OSError as exc:
+                    raise BackendError(
+                        "Не удалось проверить Cobalt redirect",
+                        kind=BackendErrorKind.RETRYABLE,
+                    ) from exc
             if response is None or response.status != 200:
                 raise BackendError(
                     "Cobalt media stream недоступен",
+                    kind=BackendErrorKind.RETRYABLE,
+                )
+            content_type = response.headers.get("Content-Type", "").partition(";")[0].lower()
+            if content_type.startswith("text/") or content_type == "application/json":
+                raise BackendError(
+                    "Cobalt media endpoint вернул не видео",
                     kind=BackendErrorKind.RETRYABLE,
                 )
             declared_size = self._content_length(response.headers)
@@ -238,11 +252,7 @@ class CobaltBackend:
                             "Не удалось записать временный файл",
                             kind=BackendErrorKind.FILESYSTEM,
                         ) from exc
-                    percent = (
-                        min(100.0, written * 100 / declared_size)
-                        if declared_size
-                        else None
-                    )
+                    percent = min(100.0, written * 100 / declared_size) if declared_size else None
                     await progress("downloading", percent)
             except asyncio.CancelledError:
                 raise
@@ -262,6 +272,11 @@ class CobaltBackend:
                     kind=BackendErrorKind.FILESYSTEM,
                 ) from exc
             probe = await probe_media(final_path)
+            if probe.width is None or probe.height is None:
+                raise BackendError(
+                    "Cobalt payload не содержит видеопоток",
+                    kind=BackendErrorKind.RETRYABLE,
+                )
             completed = True
             return MediaPackage(
                 artifacts=(

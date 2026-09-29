@@ -63,12 +63,10 @@ class CobaltClient:
             ) from exc
         try:
             if response.status < 200 or response.status >= 300:
-                raise CobaltClientError(
-                    "Cobalt API вернул ошибку", kind=CobaltErrorKind.RETRYABLE
-                )
+                raise CobaltClientError("Cobalt API вернул ошибку", kind=CobaltErrorKind.RETRYABLE)
             try:
                 payload = await response.json(content_type=None)
-            except (TypeError, ValueError, ClientError) as exc:
+            except (TypeError, ValueError, ClientError, OSError) as exc:
                 raise CobaltClientError(
                     "Cobalt API вернул некорректный JSON",
                     kind=CobaltErrorKind.RETRYABLE,
@@ -139,6 +137,11 @@ class CobaltClient:
             raise CobaltClientError(
                 "Cobalt API вернул небезопасный URL",
                 kind=CobaltErrorKind.SECURITY,
+            ) from exc
+        except OSError as exc:
+            raise CobaltClientError(
+                "Не удалось проверить media URL Cobalt",
+                kind=CobaltErrorKind.RETRYABLE,
             ) from exc
         return CobaltMediaResponse(kind=kind, url=url, filename=filename)
 

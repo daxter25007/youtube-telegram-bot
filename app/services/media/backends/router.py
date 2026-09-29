@@ -47,7 +47,9 @@ class MediaBackendRouter:
                 following = backends[index + 1]
                 await asyncio.to_thread(self._clear_job_contents, job_dir)
                 await on_fallback(backend.name, following.name)
-        raise BackendError("Backend chain завершилась без результата", kind=BackendErrorKind.RETRYABLE)
+        raise BackendError(
+            "Backend chain завершилась без результата", kind=BackendErrorKind.RETRYABLE
+        )
 
     @staticmethod
     def _clear_job_contents(job_dir: Path) -> None:

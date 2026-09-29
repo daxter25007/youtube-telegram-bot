@@ -80,6 +80,18 @@ class FakeValidator:
         return SimpleNamespace(url=url, is_internal=allowed_internal_origin is not None)
 
 
+class SequencedFailingValidator(FakeValidator):
+    def __init__(self, fail_at: int) -> None:
+        super().__init__()
+        self.fail_at = fail_at
+
+    async def validate(self, url: str, *, allowed_internal_origin=None):
+        self.calls.append((url, allowed_internal_origin))
+        if len(self.calls) == self.fail_at:
+            raise OSError("dns failed")
+        return SimpleNamespace(url=url, is_internal=allowed_internal_origin is not None)
+
+
 def request() -> MediaDownloadRequest:
     return MediaDownloadRequest(
         source=MediaSource.TIKTOK,
@@ -192,6 +204,26 @@ async def test_cobalt_backend_wraps_connection_error_for_fallback(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_cobalt_backend_rejects_non_video_payload_after_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = FakeResponse([b"<html>temporary upstream error</html>"])
+    downloader = backend(response)
+
+    async def fake_probe(path: Path):
+        return SimpleNamespace(width=None, height=None, duration=None)
+
+    monkeypatch.setattr("app.services.media.backends.cobalt.probe_media", fake_probe)
+
+    with pytest.raises(BackendError) as raised:
+        await downloader.download(request(), tmp_path, _ignore_progress)
+
+    assert raised.value.kind is BackendErrorKind.RETRYABLE
+    assert not (tmp_path / "media.mp4").exists()
+
+
+@pytest.mark.asyncio
 async def test_cobalt_backend_removes_partial_after_cancellation(tmp_path: Path) -> None:
     response = FakeResponse([b"partial", asyncio.CancelledError()])
 
@@ -226,6 +258,35 @@ async def test_cobalt_backend_revalidates_and_rejects_unsafe_redirect(tmp_path: 
     assert raised.value.kind is BackendErrorKind.RETRYABLE
     assert validator.calls == [(source_url, None), (private_url, None)]
     assert opener.urls == [source_url]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_at", [1, 2])
+async def test_cobalt_backend_wraps_dns_failure_during_url_validation(
+    tmp_path: Path,
+    fail_at: int,
+) -> None:
+    source_url = "https://cdn.example/video.mp4"
+    redirected_url = "https://media.example/video.mp4"
+    validator = SequencedFailingValidator(fail_at)
+    opener = FakeOpener(FakeResponse([], status=302, headers={"Location": redirected_url}))
+    downloader = CobaltBackend(
+        client=FakeCobaltClient(
+            CobaltMediaResponse(
+                kind=CobaltResponseKind.REDIRECT,
+                url=source_url,
+                filename="video.mp4",
+            )
+        ),  # type: ignore[arg-type]
+        validator=validator,  # type: ignore[arg-type]
+        opener=opener,  # type: ignore[arg-type]
+        max_upload_bytes=100,
+    )
+
+    with pytest.raises(BackendError) as raised:
+        await downloader.download(request(), tmp_path, _ignore_progress)
+
+    assert raised.value.kind is BackendErrorKind.RETRYABLE
 
 
 async def _ignore_progress(stage: str, percent: float | None) -> None:

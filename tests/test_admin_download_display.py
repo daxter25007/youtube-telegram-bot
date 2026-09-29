@@ -18,9 +18,7 @@ def test_admin_download_summary_uses_tiktok_option_instead_of_none_quality() -> 
         backend=DownloadBackend.COBALT,
     )
 
-    assert _download_summary_line(download) == (
-        "#7 TikTok · лучшее качество · cobalt — completed"
-    )
+    assert _download_summary_line(download) == ("#7 TikTok · лучшее качество · cobalt — completed")
 
 
 class FakeCobaltClient:

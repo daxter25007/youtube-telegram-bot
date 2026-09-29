@@ -32,11 +32,14 @@ class FakeSession:
 
 
 class FakeValidator:
-    def __init__(self) -> None:
+    def __init__(self, error: Exception | None = None) -> None:
         self.calls: list[tuple[str, str | None]] = []
+        self.error = error
 
     async def validate(self, url: str, *, allowed_internal_origin: str | None = None):
         self.calls.append((url, allowed_internal_origin))
+        if self.error is not None:
+            raise self.error
         return SimpleNamespace(url=url)
 
 
@@ -126,3 +129,33 @@ async def test_client_rejects_invalid_json_without_leaking_url() -> None:
         await client.prepare(source_url)
 
     assert source_url not in str(raised.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [TimeoutError(), OSError("connection reset")])
+async def test_client_normalizes_json_read_failures_for_backend_fallback(error: Exception) -> None:
+    client, _, _, response = client_for(error)
+
+    with pytest.raises(CobaltClientError) as raised:
+        await client.prepare("https://vm.tiktok.com/ABC123/")
+
+    assert raised.value.kind is CobaltErrorKind.RETRYABLE
+    assert response.released is True
+
+
+@pytest.mark.asyncio
+async def test_client_normalizes_validator_dns_failure_for_backend_fallback() -> None:
+    response = FakeResponse({"status": "redirect", "url": "https://cdn.example/video.mp4"})
+    validator = FakeValidator(OSError("dns failed"))
+    client = CobaltClient(
+        base_url="http://cobalt:9000",
+        request_timeout_seconds=30,
+        session=FakeSession(response),  # type: ignore[arg-type]
+        validator=validator,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(CobaltClientError) as raised:
+        await client.prepare("https://vm.tiktok.com/ABC123/")
+
+    assert raised.value.kind is CobaltErrorKind.RETRYABLE
+    assert response.released is True

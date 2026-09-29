@@ -21,8 +21,7 @@ def upgrade() -> None:
     op.add_column("downloads", sa.Column("backend", sa.String(length=16), nullable=True))
     op.execute(
         sa.text(
-            "UPDATE downloads SET backend = 'ytdlp' "
-            "WHERE status = 'completed' AND backend IS NULL"
+            "UPDATE downloads SET backend = 'ytdlp' WHERE status = 'completed' AND backend IS NULL"
         )
     )
 
