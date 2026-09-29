@@ -8,6 +8,7 @@ from app.services.media.errors import MetadataError, MetadataErrorKind, classify
 from app.services.media.metadata import YtDlpMetadataService
 from app.services.media.models import MediaKind, MediaSource
 from app.services.media.registry import MediaRegistry
+from app.services.youtube.metadata import MetadataService
 
 
 def test_youtube_metadata_keeps_available_size_compatible_qualities() -> None:
@@ -49,6 +50,10 @@ def test_youtube_metadata_keeps_available_size_compatible_qualities() -> None:
     assert metadata.media_kind is MediaKind.VIDEO
     assert [option.key for option in metadata.options] == ["video_720"]
     assert metadata.options[0].estimated_size == 700
+
+
+def test_legacy_youtube_metadata_name_uses_shared_implementation() -> None:
+    assert MetadataService is YtDlpMetadataService
 
 
 def test_tiktok_metadata_creates_automatic_best_video_option() -> None:

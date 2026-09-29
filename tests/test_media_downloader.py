@@ -8,6 +8,7 @@ from app.services.media.downloader import (
     build_download_command,
 )
 from app.services.media.models import DownloadPolicy, MediaKind
+from app.services.youtube.downloader import YouTubeDownloader
 
 
 def test_download_command_places_url_after_option_separator(tmp_path: Path) -> None:
@@ -24,6 +25,10 @@ def test_download_command_places_url_after_option_separator(tmp_path: Path) -> N
     assert command[-2:] == ["--", url]
     assert command[command.index("--format") + 1] == "best[ext=mp4]/best"
     assert "shell=True" not in command
+
+
+def test_legacy_youtube_downloader_name_uses_shared_implementation() -> None:
+    assert YouTubeDownloader is MediaDownloader
 
 
 class FakeStream:

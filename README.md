@@ -1,8 +1,8 @@
-# YouTube → Telegram Bot
+# YouTube + TikTok → Telegram Bot
 
-Production-oriented Telegram-бот на Python 3.12, который проверяет подписку на обязательные каналы, получает метаданные YouTube, предлагает реально доступное качество, скачивает видео через `yt-dlp`/`ffmpeg` и отправляет его через локальный Telegram Bot API Server.
+Готовый к эксплуатации Telegram-бот на Python 3.12, который проверяет подписку на обязательные каналы, получает метаданные YouTube и TikTok, скачивает видео через `yt-dlp`/`ffmpeg` и отправляет его через локальный Telegram Bot API Server. Для YouTube пользователь выбирает доступное качество, для TikTok бот автоматически берёт лучший видеовариант.
 
-> Используйте загрузку только для контента, который вы вправе скачивать и распространять. Учитывайте правила YouTube, Telegram и законодательство вашей страны.
+> Используйте загрузку только для контента, который вы вправе скачивать и распространять. Учитывайте правила исходной площадки, Telegram и законодательство вашей страны.
 
 ## Архитектура
 
@@ -13,7 +13,7 @@ Telegram Local Bot API Server (--local, internal port 8081)
     ↓
 aiogram bot → PostgreSQL (users, requests, channels, statistics)
     ↓
-YouTube → yt-dlp → ffmpeg merge/remux
+YouTube / TikTok → source adapter → yt-dlp → ffmpeg merge/remux
     ↓
 /shared-temp/jobs/<uuid>/media.mp4
     ↓ shared Docker volume, local filesystem path
@@ -33,6 +33,8 @@ PostgreSQL и порт 8081 не публикуются на хост. Они д
 ## Возможности
 
 - URL `youtube.com/watch`, `youtu.be`, `youtube.com/shorts` с жёстким whitelist хостов;
+- публичные TikTok-видео по каноническим ссылкам и официальным коротким ссылкам `vm.tiktok.com` / `vt.tiktok.com`;
+- расширяемый реестр адаптеров для будущего добавления Instagram, VK, RuTube, фото и аудио без изменения очереди и временного хранилища;
 - 360p, 480p, 720p, 1080p, 1440p, 2160p — только когда формат существует и оценочный размер не превышает лимит;
 - предпочтение MP4/H.264 + M4A/AAC, fallback на лучший совместимый video/audio без hardcoded format ID;
 - merge/remux через ffmpeg, `sendVideo` с `supports_streaming`, fallback на `sendDocument`;
@@ -142,7 +144,11 @@ docker compose stop telegram-bot-api
 
 Local Bot API официально поддерживает upload до 2000 MB и локальные пути. Рабочий лимит по умолчанию — `MAX_UPLOAD_MB=1950`, чтобы оставить запас. До скачивания варианты с заведомо слишком большой оценкой скрываются; после скачивания обязательно проверяется фактический `stat().st_size`. Файл больше лимита не отправляется.
 
-Один job хранится в `/shared-temp/jobs/<uuid>`. Название YouTube не используется как путь. `shared-temp` монтируется read/write в bot и read-only в Bot API. Активные jobs защищены от periodic cleanup.
+Один job хранится в `/shared-temp/jobs/<uuid>`. Название публикации не используется как путь. `shared-temp` монтируется read/write в bot и read-only в Bot API. Активные jobs защищены от periodic cleanup.
+
+### Ограничения TikTok
+
+На текущем этапе поддерживаются только публичные видеопубликации. Фотокарусели и скачивание отдельной аудиодорожки запланированы, но пока бот вернёт понятное сообщение о неподдерживаемом формате. Защита TikTok периодически изменяется: если публичное видео перестало извлекаться, сначала обновите yt-dlp пересборкой образа. Для публикаций, требующих входа, можно подключить runtime cookies описанным ниже способом; cookies никогда не добавляются в Git или Docker image.
 
 ## Cookies (опционально)
 
@@ -181,13 +187,13 @@ ruff format --check .
 pytest
 ```
 
-Unit tests не требуют token, YouTube, PostgreSQL или Local Bot API. Внешние integration tests помечены `integration` и пропускаются, пока явно не задано:
+Unit tests не требуют token, сети социальных площадок, PostgreSQL или Local Bot API. Внешние integration tests помечены `integration` и пропускаются, пока явно не задано:
 
 ```bash
 RUN_INTEGRATION_TESTS=1 pytest -m integration
 ```
 
-Для integration suite экспортируйте `DATABASE_URL`, `TELEGRAM_LOCAL_API_URL`, `BOT_TOKEN`; сетевой metadata-тест дополнительно запускается при наличии `INTEGRATION_YOUTUBE_URL`.
+Для integration suite экспортируйте `DATABASE_URL`, `TELEGRAM_LOCAL_API_URL`, `BOT_TOKEN`; сетевые metadata-тесты дополнительно запускаются при наличии `INTEGRATION_YOUTUBE_URL` и/или `INTEGRATION_TIKTOK_URL`.
 
 Проверка Compose:
 
@@ -249,9 +255,9 @@ Named volumes `telegram-bot-api-data` и `postgres-data` не удаляйте �
 ## Безопасность
 
 - `.env`, cookies, базы, логи и temp-файлы исключены из Git;
-- callback содержит только короткий random request ID и качество, никогда полный URL;
+- callback содержит только короткий random request ID и серверный option key, никогда полный URL или аргументы yt-dlp;
 - ownership и TTL запроса проверяются на callback;
-- URL нормализуется в канонический YouTube URL, private/local hosts и другие схемы отвергаются;
+- URL проверяется адаптером конкретной площадки; private/local hosts, похожие домены, credentials, нестандартные порты и другие схемы отвергаются;
 - пользовательский ввод никогда не попадает в shell: subprocess запускаются списком аргументов;
 - title очищается и используется только как display filename;
 - PostgreSQL и Local Bot API не имеют host `ports`;
@@ -263,7 +269,8 @@ Named volumes `telegram-bot-api-data` и `postgres-data` не удаляйте �
 app/
   bot/{routers,keyboards,middlewares,states}/
   database/{models,repositories}/
-  services/youtube/
+  services/media/{adapters,metadata,downloader,models,registry}.py
+  services/youtube/  # совместимые YouTube format helpers
   services/{cleanup,download_manager,queue,statistics,subscriptions,telegram_files}.py
   utils/
   config.py

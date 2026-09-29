@@ -22,13 +22,14 @@ from app.database.repositories.requests import DownloadRequestRepository
 from app.database.session import Database
 from app.services.cleanup import TempStorage, cleanup_loop, request_cleanup_loop
 from app.services.download_manager import DownloadManager
+from app.services.media.downloader import MediaDownloader
+from app.services.media.metadata import YtDlpMetadataService
+from app.services.media.registry import MediaRegistry
 from app.services.queue import DownloadQueue
 from app.services.rate_limit import SlidingWindowRateLimiter
 from app.services.statistics import StatisticsService
 from app.services.subscriptions import SubscriptionService
 from app.services.telegram_files import TelegramFileService
-from app.services.youtube.downloader import YouTubeDownloader
-from app.services.youtube.metadata import MetadataService
 from app.utils.logging import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -122,11 +123,12 @@ async def run() -> int:
 
         cookies = str(settings.ytdlp_cookies_file) if settings.ytdlp_cookies_file else None
         subscriptions = SubscriptionService()
+        media_registry = MediaRegistry.default()
         manager = DownloadManager(
             database=database,
             settings=settings,
             storage=storage,
-            downloader=YouTubeDownloader(cookies),
+            downloader=MediaDownloader(cookies),
             subscriptions=subscriptions,
             telegram_files=TelegramFileService(),
         )
@@ -135,7 +137,9 @@ async def run() -> int:
         dispatcher.include_routers(start_router, admin_router, downloader_router)
         dispatcher.workflow_data.update(
             settings=settings,
-            metadata_service=MetadataService(
+            media_registry=media_registry,
+            metadata_service=YtDlpMetadataService(
+                registry=media_registry,
                 timeout_seconds=settings.metadata_timeout_seconds,
                 max_upload_bytes=settings.max_upload_bytes,
                 cookies_file=cookies,

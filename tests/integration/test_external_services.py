@@ -7,7 +7,8 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.services.youtube.metadata import MetadataService
+from app.services.media.metadata import YtDlpMetadataService
+from app.services.media.registry import MediaRegistry
 
 pytestmark = pytest.mark.integration
 
@@ -41,9 +42,30 @@ async def test_youtube_metadata_when_url_is_provided() -> None:
     url = os.getenv("INTEGRATION_YOUTUBE_URL")
     if not url:
         pytest.skip("INTEGRATION_YOUTUBE_URL is not set")
-    metadata = await MetadataService(
+    registry = MediaRegistry.default()
+    parsed = registry.parse(url)
+    assert parsed is not None
+    metadata = await YtDlpMetadataService(
+        registry=registry,
         timeout_seconds=120,
         max_upload_bytes=1950 * 1024 * 1024,
-    ).fetch(url)
-    assert metadata.video_id
-    assert metadata.qualities
+    ).fetch(parsed)
+    assert metadata.media_id
+    assert metadata.options
+
+
+@pytest.mark.asyncio
+async def test_tiktok_metadata_when_url_is_provided() -> None:
+    url = os.getenv("INTEGRATION_TIKTOK_URL")
+    if not url:
+        pytest.skip("INTEGRATION_TIKTOK_URL is not set")
+    registry = MediaRegistry.default()
+    parsed = registry.parse(url)
+    assert parsed is not None
+    metadata = await YtDlpMetadataService(
+        registry=registry,
+        timeout_seconds=120,
+        max_upload_bytes=1950 * 1024 * 1024,
+    ).fetch(parsed)
+    assert metadata.media_id
+    assert metadata.options[0].key == "best_video"

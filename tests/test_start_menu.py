@@ -1,4 +1,4 @@
-from app.bot.routers.start import start_menu
+from app.bot.routers.start import WELCOME_TEXT, start_menu
 
 
 def test_start_menu_is_hidden_from_regular_users() -> None:
@@ -22,3 +22,10 @@ def test_start_menu_is_available_to_administrators() -> None:
         "admin:channels",
         "admin:system",
     }
+
+
+def test_welcome_text_names_only_supported_platforms() -> None:
+    assert "YouTube" in WELCOME_TEXT
+    assert "TikTok" in WELCOME_TEXT
+    assert "Instagram" not in WELCOME_TEXT
+    assert "VK" not in WELCOME_TEXT
