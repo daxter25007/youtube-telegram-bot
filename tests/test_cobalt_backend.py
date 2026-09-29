@@ -63,6 +63,11 @@ class FakeOpener:
         return self.responses.pop(0)
 
 
+class FailingOpener:
+    async def open(self, validated):
+        raise OSError("connection refused")
+
+
 class FakeValidator:
     def __init__(self, rejected: set[str] | None = None) -> None:
         self.rejected = rejected or set()
@@ -163,6 +168,27 @@ async def test_cobalt_backend_removes_partial_after_stream_error(tmp_path: Path)
 
     assert raised.value.kind is BackendErrorKind.RETRYABLE
     assert not (tmp_path / "media.part").exists()
+
+
+@pytest.mark.asyncio
+async def test_cobalt_backend_wraps_connection_error_for_fallback(tmp_path: Path) -> None:
+    downloader = CobaltBackend(
+        client=FakeCobaltClient(
+            CobaltMediaResponse(
+                kind=CobaltResponseKind.TUNNEL,
+                url="http://cobalt:9000/tunnel?id=secret",
+                filename="video.mp4",
+            )
+        ),  # type: ignore[arg-type]
+        validator=FakeValidator(),  # type: ignore[arg-type]
+        opener=FailingOpener(),  # type: ignore[arg-type]
+        max_upload_bytes=100,
+    )
+
+    with pytest.raises(BackendError) as raised:
+        await downloader.download(request(), tmp_path, _ignore_progress)
+
+    assert raised.value.kind is BackendErrorKind.RETRYABLE
 
 
 @pytest.mark.asyncio

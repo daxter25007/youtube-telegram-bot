@@ -55,7 +55,11 @@ class FakeIncomingMessage:
 
 
 class FakeMetadataService:
+    def __init__(self) -> None:
+        self.calls = []
+
     async def fetch(self, parsed):
+        self.calls.append(parsed)
         if parsed.source is MediaSource.YOUTUBE:
             options = (
                 DownloadOption(
@@ -146,6 +150,7 @@ async def test_tiktok_link_is_automatically_submitted_to_queue(session_and_user)
     session, user = session_and_user
     message = FakeIncomingMessage("https://www.tiktok.com/@creator/video/7461234567890123456")
     queue = FakeQueue()
+    metadata_service = FakeMetadataService()
 
     await receive_url(
         message=message,  # type: ignore[arg-type]
@@ -154,7 +159,7 @@ async def test_tiktok_link_is_automatically_submitted_to_queue(session_and_user)
         db_user=user,
         settings=settings(),  # type: ignore[arg-type]
         media_registry=MediaRegistry.default(),
-        metadata_service=FakeMetadataService(),  # type: ignore[arg-type]
+        metadata_service=metadata_service,  # type: ignore[arg-type]
         rate_limiter=FakeRateLimiter(),  # type: ignore[arg-type]
         subscription_service=FakeSubscriptions(),  # type: ignore[arg-type]
         download_queue=queue,  # type: ignore[arg-type]
@@ -168,3 +173,29 @@ async def test_tiktok_link_is_automatically_submitted_to_queue(session_and_user)
     assert download.requested_option == "best_video"
     assert download.requested_quality is None
     assert await session.scalar(select(DownloadRequest)) is None
+    assert metadata_service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_tiktok_short_link_gets_stable_internal_media_id(session_and_user) -> None:
+    session, user = session_and_user
+    message = FakeIncomingMessage("https://vm.tiktok.com/ZM1234abc/")
+
+    await receive_url(
+        message=message,  # type: ignore[arg-type]
+        bot=object(),  # type: ignore[arg-type]
+        session=session,
+        db_user=user,
+        settings=settings(),  # type: ignore[arg-type]
+        media_registry=MediaRegistry.default(),
+        metadata_service=FakeMetadataService(),  # type: ignore[arg-type]
+        rate_limiter=FakeRateLimiter(),  # type: ignore[arg-type]
+        subscription_service=FakeSubscriptions(),  # type: ignore[arg-type]
+        download_queue=FakeQueue(),  # type: ignore[arg-type]
+        download_manager=object(),  # type: ignore[arg-type]
+    )
+
+    download = await session.scalar(select(Download))
+    assert download is not None
+    assert download.source_media_id.startswith("url_")
+    assert len(download.source_media_id) == 36

@@ -14,7 +14,12 @@ from app.database.repositories.downloads import DownloadRepository
 from app.database.session import Database
 from app.services.cleanup import TempStorage
 from app.services.download_manager import DownloadManager
-from app.services.media.downloader import DownloadError
+from app.services.media.backends.base import (
+    BackendError,
+    BackendErrorKind,
+    BackendResult,
+    DownloadBackend,
+)
 from app.services.media.models import (
     DownloadPolicy,
     MediaArtifact,
@@ -51,41 +56,53 @@ class FailingTelegramFiles:
 
 
 class SuccessfulDownloader:
-    async def download(self, *, job_dir: Path, progress, **kwargs):
+    async def download(self, request, job_dir: Path, progress, on_fallback):
         path = job_dir / "media.mp4"
         path.write_bytes(b"video")
         await progress("downloading", 50)
-        return MediaPackage(
-            artifacts=(
-                MediaArtifact(
-                    path=path,
-                    media_kind=MediaKind.VIDEO,
-                    width=10,
-                    height=360,
-                    duration=1,
-                ),
-            )
+        return BackendResult(
+            package=MediaPackage(
+                artifacts=(
+                    MediaArtifact(
+                        path=path,
+                        media_kind=MediaKind.VIDEO,
+                        width=10,
+                        height=360,
+                        duration=1,
+                    ),
+                )
+            ),
+            backend=DownloadBackend.YTDLP,
         )
 
 
 class OversizedDownloader:
-    async def download(self, *, job_dir: Path, progress, **kwargs):
+    async def download(self, request, job_dir: Path, progress, on_fallback):
         path = job_dir / "media.mp4"
         path.write_bytes(b"x" * 1_001)
-        return MediaPackage(
-            artifacts=(MediaArtifact(path=path, media_kind=MediaKind.VIDEO, height=720),)
+        return BackendResult(
+            package=MediaPackage(
+                artifacts=(MediaArtifact(path=path, media_kind=MediaKind.VIDEO, height=720),)
+            ),
+            backend=DownloadBackend.YTDLP,
         )
 
 
 class FailingDownloader:
     async def download(self, **kwargs):
-        raise DownloadError("failure")
+        raise BackendError("failure", kind=BackendErrorKind.RETRYABLE)
 
 
 class TimeoutDownloader:
     async def download(self, **kwargs):
         await asyncio.sleep(1)
         raise AssertionError
+
+
+class FallbackDownloader(SuccessfulDownloader):
+    async def download(self, request, job_dir: Path, progress, on_fallback):
+        await on_fallback(DownloadBackend.COBALT, DownloadBackend.YTDLP)
+        return await super().download(request, job_dir, progress, on_fallback)
 
 
 async def make_database(tmp_path: Path) -> tuple[Database, int, int]:
@@ -131,7 +148,7 @@ async def run_case(
         database=database,
         settings=settings(tmp_path, job_timeout),  # type: ignore[arg-type]
         storage=storage,
-        downloader=downloader,
+        backend_router=downloader,
         subscriptions=FakeSubscriptions(),  # type: ignore[arg-type]
         telegram_files=telegram_files or FakeTelegramFiles(),  # type: ignore[arg-type]
     )
@@ -197,3 +214,12 @@ async def test_cleanup_after_actual_file_exceeds_limit(tmp_path: Path) -> None:
     assert status == DownloadStatus.TOO_LARGE
     assert jobs == []
     assert any("слишком большим" in text for text in texts)
+
+
+@pytest.mark.asyncio
+async def test_manager_reports_cobalt_fallback(tmp_path: Path) -> None:
+    status, jobs, texts = await run_case(tmp_path, FallbackDownloader())
+
+    assert status == DownloadStatus.COMPLETED
+    assert jobs == []
+    assert any("резервный способ" in text for text in texts)

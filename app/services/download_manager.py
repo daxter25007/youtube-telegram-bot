@@ -17,7 +17,13 @@ from app.database.repositories.downloads import DownloadRepository
 from app.database.repositories.users import UserRepository
 from app.database.session import Database
 from app.services.cleanup import TempStorage
-from app.services.media.downloader import DownloadError, MediaDownloader
+from app.services.media.backends.base import (
+    BackendError,
+    BackendErrorKind,
+    DownloadBackend,
+    MediaDownloadRequest,
+)
+from app.services.media.backends.router import MediaBackendRouter
 from app.services.media.models import DownloadPolicy, MediaKind, MediaSource
 from app.services.subscriptions import SubscriptionService
 from app.services.telegram_files import TelegramFileService
@@ -67,14 +73,14 @@ class DownloadManager:
         database: Database,
         settings: Settings,
         storage: TempStorage,
-        downloader: MediaDownloader,
+        backend_router: MediaBackendRouter,
         subscriptions: SubscriptionService,
         telegram_files: TelegramFileService,
     ) -> None:
         self.database = database
         self.settings = settings
         self.storage = storage
-        self.downloader = downloader
+        self.backend_router = backend_router
         self.subscriptions = subscriptions
         self.telegram_files = telegram_files
 
@@ -125,14 +131,39 @@ class DownloadManager:
                         await self._status(download_id, DownloadStatus.MERGING)
                     await reporter.update(stage, percent)
 
-                package = await self.downloader.download(
-                    url=source_url,
-                    policy=policy,
-                    job_dir=job_dir,
-                    progress=progress,
+                async def on_fallback(
+                    failed: DownloadBackend,
+                    following: DownloadBackend,
+                ) -> None:
+                    logger.info(
+                        "Switching media backend download_id=%s source=%s from=%s to=%s",
+                        download_id,
+                        source.value,
+                        failed.value,
+                        following.value,
+                    )
+                    await reporter.update(
+                        "🔄 Основной способ недоступен. Пробую резервный способ...",
+                        force=True,
+                    )
+
+                result = await self.backend_router.download(
+                    MediaDownloadRequest(
+                        source=source,
+                        url=source_url,
+                        option_key=option_key,
+                        policy=policy,
+                    ),
+                    job_dir,
+                    progress,
+                    on_fallback,
                 )
+                package = result.package
                 if not package.artifacts:
-                    raise DownloadError("Загрузчик вернул пустой пакет")
+                    raise BackendError(
+                        "Загрузчик вернул пустой пакет",
+                        kind=BackendErrorKind.RETRYABLE,
+                    )
                 file_sizes = [
                     await asyncio.to_thread(os.path.getsize, artifact.path)
                     for artifact in package.artifacts
@@ -197,18 +228,32 @@ class DownloadManager:
                 )
             )
             raise
-        except DownloadError:
-            logger.exception(
-                "yt-dlp download failed for download_id=%s source=%s kind=%s option=%s",
+        except BackendError as error:
+            logger.warning(
+                "Media download failed download_id=%s source=%s kind=%s option=%s error_kind=%s",
                 download_id,
                 source.value,
                 media_kind.value,
                 option_key,
+                error.kind.value,
             )
+            if error.kind is BackendErrorKind.TOO_LARGE:
+                await self._status(
+                    download_id,
+                    DownloadStatus.TOO_LARGE,
+                    error_type=error.kind.value,
+                    processing_seconds=time.monotonic() - started,
+                )
+                await reporter.update(
+                    "⚠️ Видео получилось слишком большим для отправки в Telegram. "
+                    "Выберите более низкое качество.",
+                    force=True,
+                )
+                return
             await self._status(
                 download_id,
                 DownloadStatus.FAILED,
-                error_type="ytdlp",
+                error_type=f"backend_{error.kind.value}",
                 processing_seconds=time.monotonic() - started,
             )
             await reporter.update("❌ Не удалось скачать видео. Попробуйте позже.", force=True)

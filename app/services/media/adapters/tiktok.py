@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 from urllib.parse import urlunsplit
@@ -27,6 +28,28 @@ SHORT_PATH_RE = re.compile(r"^/[A-Za-z0-9_-]{4,128}/?$")
 class TikTokAdapter:
     source = MediaSource.TIKTOK
     automatic_option = "best_video"
+
+    def initial_metadata(self, parsed: ParsedMediaUrl) -> MediaMetadata:
+        media_id = parsed.media_id
+        if media_id is None:
+            digest = hashlib.sha256(parsed.normalized_url.encode("utf-8")).hexdigest()[:32]
+            media_id = f"url_{digest}"
+        return MediaMetadata(
+            source=self.source,
+            media_id=media_id,
+            source_url=parsed.normalized_url,
+            title="TikTok video",
+            duration=None,
+            thumbnail=None,
+            media_kind=MediaKind.VIDEO,
+            options=(
+                DownloadOption(
+                    key=self.automatic_option,
+                    label="Лучшее качество",
+                    media_kind=MediaKind.VIDEO,
+                ),
+            ),
+        )
 
     def parse_url(self, text: str) -> ParsedMediaUrl | None:
         parsed = _split_safe_https_url(text)

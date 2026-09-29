@@ -201,20 +201,23 @@ async def receive_url(
 
     await session.commit()
     status_message = await message.answer("🔎 Получаю информацию о видео...")
-    try:
-        metadata = await metadata_service.fetch(parsed)
-    except TimeoutError:
-        await status_message.edit_text("⌛ Не удалось получить информацию о видео вовремя.")
-        return
-    except MetadataError as error:
-        logger.info(
-            "Metadata extraction rejected source=%s media_id=%s kind=%s",
-            parsed.source.value,
-            parsed.media_id or "unknown",
-            error.kind.value,
-        )
-        await status_message.edit_text(_metadata_error_text(error))
-        return
+    adapter = media_registry.adapter_for(parsed.source)
+    metadata = adapter.initial_metadata(parsed)
+    if metadata is None:
+        try:
+            metadata = await metadata_service.fetch(parsed)
+        except TimeoutError:
+            await status_message.edit_text("⌛ Не удалось получить информацию о видео вовремя.")
+            return
+        except MetadataError as error:
+            logger.info(
+                "Metadata extraction rejected source=%s media_id=%s kind=%s",
+                parsed.source.value,
+                parsed.media_id or "unknown",
+                error.kind.value,
+            )
+            await status_message.edit_text(_metadata_error_text(error))
+            return
 
     request = await DownloadRequestRepository(session).create(
         user_id=db_user.id,
@@ -226,7 +229,6 @@ async def receive_url(
         metadata=metadata.as_dict(),
     )
     await session.commit()
-    adapter = media_registry.adapter_for(metadata.source)
     if adapter.automatic_option:
         option = next(
             (item for item in metadata.options if item.key == adapter.automatic_option),

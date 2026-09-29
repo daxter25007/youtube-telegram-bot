@@ -9,7 +9,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.exceptions import TelegramAPIError
-from aiohttp import ClientError
+from aiohttp import ClientError, ClientSession
 from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -21,9 +21,15 @@ from app.database.repositories.downloads import DownloadRepository
 from app.database.repositories.requests import DownloadRequestRepository
 from app.database.session import Database
 from app.services.cleanup import TempStorage, cleanup_loop, request_cleanup_loop
+from app.services.cobalt.client import CobaltClient
+from app.services.cobalt.security import SafeRemoteUrlValidator
 from app.services.download_manager import DownloadManager
+from app.services.media.backends.cobalt import AiohttpResponseOpener, CobaltBackend
+from app.services.media.backends.router import MediaBackendRouter
+from app.services.media.backends.ytdlp import YtDlpBackend
 from app.services.media.downloader import MediaDownloader
 from app.services.media.metadata import YtDlpMetadataService
+from app.services.media.models import MediaSource
 from app.services.media.registry import MediaRegistry
 from app.services.queue import DownloadQueue
 from app.services.rate_limit import SlidingWindowRateLimiter
@@ -75,6 +81,7 @@ async def run() -> int:
     )
     stop_cleanup = asyncio.Event()
     cleanup_tasks: list[asyncio.Task[None]] = []
+    cobalt_http_session: ClientSession | None = None
     try:
         try:
             async with database.engine.connect() as connection:
@@ -124,11 +131,38 @@ async def run() -> int:
         cookies = str(settings.ytdlp_cookies_file) if settings.ytdlp_cookies_file else None
         subscriptions = SubscriptionService()
         media_registry = MediaRegistry.default()
+        ytdlp_backend = YtDlpBackend(MediaDownloader(cookies))
+        tiktok_backends = [ytdlp_backend]
+        if settings.cobalt_enabled:
+            cobalt_http_session = ClientSession()
+            cobalt_validator = SafeRemoteUrlValidator()
+            cobalt_client = CobaltClient(
+                base_url=settings.cobalt_api_url,
+                request_timeout_seconds=settings.cobalt_request_timeout_seconds,
+                session=cobalt_http_session,
+                validator=cobalt_validator,
+            )
+            cobalt_backend = CobaltBackend(
+                client=cobalt_client,
+                validator=cobalt_validator,
+                opener=AiohttpResponseOpener(
+                    cobalt_http_session,
+                    settings.cobalt_stream_timeout_seconds,
+                ),
+                max_upload_bytes=settings.max_upload_bytes,
+            )
+            tiktok_backends.insert(0, cobalt_backend)
+        backend_router = MediaBackendRouter(
+            {
+                MediaSource.YOUTUBE: (ytdlp_backend,),
+                MediaSource.TIKTOK: tuple(tiktok_backends),
+            }
+        )
         manager = DownloadManager(
             database=database,
             settings=settings,
             storage=storage,
-            downloader=MediaDownloader(cookies),
+            backend_router=backend_router,
             subscriptions=subscriptions,
             telegram_files=TelegramFileService(),
         )
@@ -166,6 +200,8 @@ async def run() -> int:
         if cleanup_tasks:
             await asyncio.gather(*cleanup_tasks, return_exceptions=True)
         await queue.stop()
+        if cobalt_http_session is not None:
+            await cobalt_http_session.close()
         await bot.session.close()
         await database.close()
 

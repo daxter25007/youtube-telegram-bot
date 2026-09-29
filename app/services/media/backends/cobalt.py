@@ -176,7 +176,13 @@ class CobaltBackend:
                 ) from exc
 
             for redirect_count in range(MAX_REDIRECTS + 1):
-                response = await self.opener.open(validated)
+                try:
+                    response = await self.opener.open(validated)
+                except (ClientError, OSError, TimeoutError) as exc:
+                    raise BackendError(
+                        "Cobalt media endpoint недоступен",
+                        kind=BackendErrorKind.RETRYABLE,
+                    ) from exc
                 if response.status not in {301, 302, 303, 307, 308}:
                     break
                 location = response.headers.get("Location")

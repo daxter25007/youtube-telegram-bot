@@ -16,6 +16,8 @@ class MediaAdapter(Protocol):
 
     def parse_url(self, text: str) -> ParsedMediaUrl | None: ...
 
+    def initial_metadata(self, parsed: ParsedMediaUrl) -> MediaMetadata | None: ...
+
     def parse_metadata(
         self,
         raw: dict[str, Any],

@@ -23,6 +23,9 @@ class YouTubeAdapter:
     source = MediaSource.YOUTUBE
     automatic_option: str | None = None
 
+    def initial_metadata(self, parsed: ParsedMediaUrl) -> MediaMetadata | None:
+        return None
+
     def parse_url(self, text: str) -> ParsedMediaUrl | None:
         parsed = _split_safe_https_url(text)
         if parsed is None:
