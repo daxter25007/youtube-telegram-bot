@@ -21,6 +21,8 @@ from app.database.models import Download
 from app.database.repositories.channels import ChannelRepository
 from app.database.repositories.downloads import DownloadRepository
 from app.database.repositories.users import UserRepository
+from app.services.cobalt.client import CobaltClient
+from app.services.media.backends.base import DownloadBackend
 from app.services.media.models import MediaSource
 from app.services.queue import DownloadQueue
 from app.services.statistics import StatisticsService
@@ -42,7 +44,15 @@ def _download_summary_line(download: Download) -> str:
         option = "лучшее качество"
     else:
         option = download.requested_option.replace("_", " ")
-    return f"#{download.id} {source} · {option} — {download.status.value}"
+    backend = getattr(download, "backend", None)
+    backend_text = f" · {backend.value}" if isinstance(backend, DownloadBackend) else ""
+    return f"#{download.id} {source} · {option}{backend_text} — {download.status.value}"
+
+
+async def _cobalt_status_text(client: CobaltClient | None) -> str:
+    if client is None:
+        return "отключён"
+    return "доступен" if await client.healthcheck() else "недоступен"
 
 
 @router.message(Command("admin"))
@@ -62,6 +72,7 @@ async def admin_callbacks(
     settings: Settings,
     statistics_service: StatisticsService,
     download_queue: DownloadQueue,
+    cobalt_client: CobaltClient | None,
 ) -> None:
     if not callback.data or not _authorized(callback.from_user.id, settings):
         await callback.answer("Недостаточно прав.", show_alert=True)
@@ -151,12 +162,14 @@ async def admin_callbacks(
         await ChannelRepository(session).delete(channel_id)
         await callback.message.edit_text("Канал удалён.", reply_markup=channels_menu())
     elif action == "admin:system":
+        cobalt_status = await _cobalt_status_text(cobalt_client)
         await callback.message.answer(
             "⚙️ Система\n"
             f"Python: {platform.python_version()}\n"
             f"Очередь: {download_queue.pending_count}\n"
             f"Лимит файла: {settings.max_upload_mb} MB\n"
-            f"Параллельных загрузок: {settings.max_concurrent_downloads}"
+            f"Параллельных загрузок: {settings.max_concurrent_downloads}\n"
+            f"Cobalt: {cobalt_status}"
         )
     await callback.answer()
 

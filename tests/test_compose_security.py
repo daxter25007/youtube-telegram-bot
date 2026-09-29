@@ -1,0 +1,31 @@
+import re
+from pathlib import Path
+
+
+def _service_block(name: str) -> str:
+    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+    match = re.search(
+        rf"(?ms)^  {re.escape(name)}:\n(?P<body>.*?)(?=^  [a-zA-Z0-9_-]+:\n|^networks:)",
+        compose,
+    )
+    assert match is not None
+    return match.group("body")
+
+
+def test_cobalt_service_is_pinned_internal_and_hardened() -> None:
+    block = _service_block("cobalt")
+
+    assert "ghcr.io/imputnet/cobalt:11.7.1-a636575@sha256:" in block
+    assert "expose:" in block
+    assert '"9000"' in block
+    assert "ports:" not in block
+    assert "privileged:" not in block
+    assert "/var/run/docker.sock" not in block
+    assert "read_only: true" in block
+    assert "healthcheck:" in block
+
+
+def test_bot_does_not_require_cobalt_health_to_start() -> None:
+    block = _service_block("bot")
+
+    assert "cobalt:" not in block

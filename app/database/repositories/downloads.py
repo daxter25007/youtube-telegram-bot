@@ -6,6 +6,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import Download, DownloadStatus
+from app.services.media.backends.base import DownloadBackend
 from app.services.media.models import MediaKind, MediaSource
 
 
@@ -53,6 +54,7 @@ class DownloadRepository:
         actual_quality: int | None = None,
         file_size: int | None = None,
         processing_seconds: float | None = None,
+        backend: DownloadBackend | None = None,
     ) -> None:
         item = await self.session.get(Download, download_id)
         if item is None:
@@ -75,6 +77,8 @@ class DownloadRepository:
             item.file_size = file_size
         if processing_seconds is not None:
             item.processing_seconds = processing_seconds
+        if backend is not None:
+            item.backend = backend
         await self.session.flush()
 
     async def recent(self, limit: int = 20) -> list[Download]:

@@ -5,6 +5,7 @@ from app.database.base import Base
 from app.database.models import DownloadStatus, User
 from app.database.repositories.downloads import DownloadRepository
 from app.database.repositories.requests import DownloadRequestRepository
+from app.services.media.backends.base import DownloadBackend
 from app.services.media.models import MediaKind, MediaSource
 
 
@@ -42,6 +43,13 @@ async def test_download_repository_persists_generic_media_fields(session) -> Non
     assert download.source_media_id == "7461234567890123456"
     assert download.requested_option == "best_video"
     assert download.requested_quality is None
+
+    await DownloadRepository(session).set_status(
+        download.id,
+        DownloadStatus.COMPLETED,
+        backend=DownloadBackend.COBALT,
+    )
+    assert download.backend is DownloadBackend.COBALT
 
 
 @pytest.mark.asyncio

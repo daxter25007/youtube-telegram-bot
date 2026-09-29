@@ -1,7 +1,10 @@
 from types import SimpleNamespace
 
-from app.bot.routers.admin import _download_summary_line
+import pytest
+
+from app.bot.routers.admin import _cobalt_status_text, _download_summary_line
 from app.database.models import DownloadStatus
+from app.services.media.backends.base import DownloadBackend
 from app.services.media.models import MediaSource
 
 
@@ -12,6 +15,30 @@ def test_admin_download_summary_uses_tiktok_option_instead_of_none_quality() -> 
         requested_option="best_video",
         requested_quality=None,
         status=DownloadStatus.COMPLETED,
+        backend=DownloadBackend.COBALT,
     )
 
-    assert _download_summary_line(download) == "#7 TikTok · лучшее качество — completed"
+    assert _download_summary_line(download) == (
+        "#7 TikTok · лучшее качество · cobalt — completed"
+    )
+
+
+class FakeCobaltClient:
+    def __init__(self, healthy: bool) -> None:
+        self.healthy = healthy
+
+    async def healthcheck(self) -> bool:
+        return self.healthy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("client", "expected"),
+    [
+        (None, "отключён"),
+        (FakeCobaltClient(True), "доступен"),
+        (FakeCobaltClient(False), "недоступен"),
+    ],
+)
+async def test_cobalt_admin_status(client, expected: str) -> None:
+    assert await _cobalt_status_text(client) == expected

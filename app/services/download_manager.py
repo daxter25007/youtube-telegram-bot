@@ -205,6 +205,7 @@ class DownloadManager:
                         actual_quality=primary.height,
                         file_size=file_size,
                         processing_seconds=elapsed,
+                        backend=result.backend,
                     )
                     await UserRepository(session).increment_downloads(user_id)
                 await reporter.update("✅ Готово", force=True)

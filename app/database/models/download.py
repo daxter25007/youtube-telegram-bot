@@ -7,6 +7,7 @@ from sqlalchemy import BigInteger, DateTime, Enum, Float, ForeignKey, Index, Int
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, TimestampMixin
+from app.services.media.backends.base import DownloadBackend
 from app.services.media.models import MediaKind, MediaSource
 
 
@@ -58,6 +59,14 @@ class Download(TimestampMixin, Base):
     requested_quality: Mapped[int | None] = mapped_column(Integer)
     actual_quality: Mapped[int | None] = mapped_column(Integer)
     file_size: Mapped[int | None] = mapped_column(BigInteger)
+    backend: Mapped[DownloadBackend | None] = mapped_column(
+        Enum(
+            DownloadBackend,
+            native_enum=False,
+            length=16,
+            values_callable=lambda members: [member.value for member in members],
+        )
+    )
     status: Mapped[DownloadStatus] = mapped_column(
         Enum(
             DownloadStatus,

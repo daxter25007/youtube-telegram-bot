@@ -133,6 +133,7 @@ async def run() -> int:
         media_registry = MediaRegistry.default()
         ytdlp_backend = YtDlpBackend(MediaDownloader(cookies))
         tiktok_backends = [ytdlp_backend]
+        cobalt_client: CobaltClient | None = None
         if settings.cobalt_enabled:
             cobalt_http_session = ClientSession()
             cobalt_validator = SafeRemoteUrlValidator()
@@ -186,6 +187,7 @@ async def run() -> int:
             statistics_service=StatisticsService(),
             download_queue=queue,
             download_manager=manager,
+            cobalt_client=cobalt_client,
         )
         await asyncio.to_thread(READY_FILE.touch)
         await dispatcher.start_polling(
