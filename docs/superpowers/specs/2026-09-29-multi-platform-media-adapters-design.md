@@ -1,124 +1,128 @@
-# Multi-platform Media Adapters Design
+# Архитектура мультиплатформенных медиа-адаптеров
 
-## Context and intent
+## Контекст и цель
 
-The bot currently downloads YouTube videos through a pipeline built around yt-dlp,
-ffmpeg, a shared temporary volume, PostgreSQL, and Telegram Local Bot API. The next
-supported source is TikTok video. Instagram, VK, RuTube, TikTok photo carousels, and
-audio-only downloads are planned, so the implementation must remove YouTube-specific
-coupling instead of adding TikTok branches throughout the existing code.
+Сейчас бот скачивает видео с YouTube через пайплайн на базе yt-dlp, ffmpeg,
+общего временного Docker volume, PostgreSQL и Telegram Local Bot API. Следующим
+источником станет TikTok. В дальнейшем планируется добавить Instagram, VK, RuTube,
+фотокарусели TikTok и скачивание только аудио. Поэтому реализация должна убрать
+жёсткую привязку к YouTube, а не добавлять разрозненные TikTok-условия в существующий
+код.
 
-The immediate user-visible scope is:
+Пользовательский функционал текущего этапа:
 
-- keep current YouTube video behavior, including quality selection;
-- accept public TikTok video URLs, including official short links;
-- download the best available TikTok video automatically;
-- reject unsupported TikTok photo posts with a clear message;
-- preserve queueing, limits, subscriptions, statistics, timeouts, cleanup, and Local
-  Bot API uploads.
+- сохранить прежнее поведение YouTube, включая выбор качества;
+- принимать публичные ссылки на видео TikTok, включая официальные короткие ссылки;
+- автоматически скачивать TikTok-видео в лучшем доступном качестве;
+- отклонять фотопубликации TikTok с понятным сообщением;
+- сохранить очередь, лимиты, проверку подписки, статистику, таймауты, очистку и
+  отправку через Local Bot API.
 
-## Chosen approach
+## Выбранный подход
 
-Introduce a source-adapter layer over shared yt-dlp infrastructure. Source adapters
-own URL rules and platform policy; shared services own subprocess execution, storage,
-queueing, file validation, and Telegram delivery.
+Над общей инфраструктурой yt-dlp создаётся слой адаптеров источников. Адаптеры
+отвечают за правила конкретной площадки, а общие сервисы — за запуск процессов,
+хранилище, очередь, проверку файлов и отправку в Telegram.
 
-This is preferred over adding TikTok checks to the current YouTube services because
-the latter would make each future source require changes across routing, metadata,
-download, and persistence code. Building all future photo and audio behavior now is
-also rejected: the contracts will accommodate those media kinds, but only video will
-be implemented in this change.
+Этот подход предпочтительнее добавления TikTok-проверок в YouTube-сервисы: иначе
+каждая следующая площадка потребует изменений одновременно в роутерах, метаданных,
+скачивании и хранении данных. При этом вся будущая логика фото и аудио сейчас не
+реализуется: контракты будут её поддерживать, но на данном этапе работает только
+видео.
 
-## Domain model
+## Доменная модель
 
-The media subsystem exposes platform-neutral immutable values:
+Медиа-подсистема предоставляет платформенно-независимые неизменяемые сущности:
 
-- `MediaSource`: `youtube` and `tiktok` initially;
-- `MediaKind`: `video`, with reserved domain values for future `photo` and `audio`;
-- `ParsedMediaUrl`: source, normalized URL, and optional source media ID;
-- `MediaMetadata`: source ID, normalized URL, title, duration, thumbnail, media kind,
-  and available download options;
-- `DownloadOption`: stable short key, display label, media kind, optional height,
-  estimated size, and adapter-owned selector data;
-- `MediaArtifact`: local path, media kind, dimensions, duration, and optional MIME
-  information;
-- `MediaPackage`: one or more artifacts produced by one download job.
+- `MediaSource`: сначала `youtube` и `tiktok`;
+- `MediaKind`: сейчас `video`, с зарезервированными доменными значениями `photo` и
+  `audio` для будущего;
+- `ParsedMediaUrl`: источник, нормализованный URL и необязательный ID публикации;
+- `MediaMetadata`: ID публикации, нормализованный URL, название, длительность,
+  обложка, тип медиа и доступные варианты загрузки;
+- `DownloadOption`: стабильный короткий ключ, подпись кнопки, тип медиа,
+  необязательная высота, оценочный размер и доверенные данные селектора адаптера;
+- `MediaArtifact`: локальный путь, тип медиа, размеры, длительность и необязательный
+  MIME-тип;
+- `MediaPackage`: один или несколько файлов, полученных одной задачей загрузки.
 
-The current implementation creates one video artifact per package. A future carousel
-can create multiple photo artifacts without changing the queue or job lifecycle.
+Текущая реализация создаёт один видеофайл в пакете. Будущая фотокарусель сможет
+создать несколько фотофайлов без изменения интерфейса очереди или жизненного цикла
+задачи.
 
-`DownloadOption` is stored in the server-side request metadata. Telegram callbacks
-contain only a short request ID and option key; they never contain a URL or raw yt-dlp
-arguments.
+`DownloadOption` хранится на сервере в метаданных запроса. Telegram callback содержит
+только короткий ID запроса и ключ варианта; URL и необработанные аргументы yt-dlp в
+callback никогда не попадают.
 
-## Component boundaries
+## Границы компонентов
 
-### Media registry
+### Реестр источников
 
-`MediaRegistry` receives user text, performs common URL safety validation, and selects
-exactly one adapter. It is the only entry point used by the Telegram router for source
-detection.
+`MediaRegistry` получает пользовательский текст, выполняет общую безопасную проверку
+URL и выбирает ровно один адаптер. Telegram-роутер определяет источник только через
+этот реестр.
 
-### Source adapters
+### Адаптеры источников
 
-Each adapter implements a common interface for:
+Каждый адаптер реализует единый интерфейс для:
 
-- matching and normalizing allowed URLs;
-- converting raw yt-dlp metadata into `MediaMetadata`;
-- producing supported `DownloadOption` values;
-- resolving an option key into trusted yt-dlp format policy;
-- classifying platform-specific extraction failures;
-- declaring whether selection is interactive or automatic.
+- распознавания и нормализации разрешённых URL;
+- преобразования необработанных метаданных yt-dlp в `MediaMetadata`;
+- формирования поддерживаемых `DownloadOption`;
+- преобразования ключа варианта в доверенную политику формата yt-dlp;
+- классификации специфичных для площадки ошибок;
+- определения, требуется ли пользователю ручной выбор варианта.
 
-`YouTubeAdapter` preserves the existing 360p through 2160p quality behavior.
-`TikTokAdapter` accepts video posts and creates one `best_video` option. Photo-only
-posts are recognized from metadata and rejected as unsupported for this release.
+`YouTubeAdapter` сохраняет существующий выбор качества от 360p до 2160p.
+`TikTokAdapter` принимает видеопубликации и создаёт один вариант `best_video`.
+Публикации только с фотографиями распознаются и отклоняются как пока не
+поддерживаемые.
 
-Adapters do not spawn processes, create temporary directories, write to PostgreSQL,
-or call Telegram.
+Адаптеры не запускают процессы, не создают временные каталоги, не записывают данные
+в PostgreSQL и не обращаются к Telegram.
 
-### Shared yt-dlp services
+### Общие сервисы yt-dlp
 
-A platform-neutral metadata extractor runs yt-dlp with `--dump-single-json`,
-`--skip-download`, `--no-playlist`, timeouts, and optional runtime cookies. It passes
-the raw result to the selected adapter.
+Платформенно-независимый сервис метаданных запускает yt-dlp с
+`--dump-single-json`, `--skip-download`, `--no-playlist`, таймаутами и необязательным
+runtime-файлом cookies. Необработанный результат передаётся выбранному адаптеру.
 
-A platform-neutral downloader receives a trusted adapter-produced download policy,
-uses `asyncio.create_subprocess_exec`, emits throttled progress, and returns a
-`MediaPackage`. ffmpeg remuxing and ffprobe inspection remain shared. No command uses
-`shell=True`.
+Платформенно-независимый загрузчик получает доверенную политику скачивания от
+адаптера, использует `asyncio.create_subprocess_exec`, сообщает о прогрессе с
+ограничением частоты и возвращает `MediaPackage`. Remux через ffmpeg и анализ через
+ffprobe остаются общими. `shell=True` не используется.
 
-### Queue and download manager
+### Очередь и менеджер загрузок
 
-The queue remains source-independent. The download manager receives source URL,
-source, option key, title, and media kind. It rechecks subscription status, owns the
-job directory, applies the configured timeout and file-size limit, updates database
-status, sends the resulting package, and deletes the directory in `finally`.
+Очередь не зависит от источника. Менеджер загрузок получает URL источника, источник,
+ключ варианта, название и тип медиа. Он повторно проверяет подписку, владеет временным
+каталогом задачи, применяет настроенный таймаут и лимит размера, обновляет статус в
+БД, отправляет полученный пакет и удаляет каталог в `finally`.
 
-The manager is responsible for the lifecycle of all artifacts in a package. It must
-never leave a partial TikTok or YouTube file after success, failure, cancellation,
-timeout, or Telegram upload error.
+Менеджер отвечает за жизненный цикл всех файлов пакета. Частичные файлы TikTok или
+YouTube не должны оставаться после успеха, ошибки, отмены, таймаута или ошибки
+отправки в Telegram.
 
-### Telegram delivery
+### Отправка в Telegram
 
-The sender accepts a `MediaPackage`. In this release it sends its single video using
-`sendVideo` with a Local Bot API `file://` path, then falls back to `sendDocument`.
-The interface permits future media groups and audio delivery without changing the
-download manager contract.
+Сервис отправки принимает `MediaPackage`. На текущем этапе он отправляет единственное
+видео через `sendVideo`, используя локальный URI `file://` Local Bot API, а при
+неудаче применяет `sendDocument`. Интерфейс допускает будущую отправку медиагрупп и
+аудио без изменения контракта менеджера загрузок.
 
-## URL policy
+## Политика проверки URL
 
-Common validation requires:
+Общая проверка требует:
 
-- HTTPS scheme;
-- no username or password component;
-- no explicit port;
-- a hostname from an adapter's exact allowlist;
-- no IP literal, localhost, private address, file URL, FTP URL, or scheme-relative
-  input;
-- no whitespace or control characters that alter URL interpretation.
+- схему HTTPS;
+- отсутствие имени пользователя и пароля в URL;
+- отсутствие явно заданного порта;
+- точное совпадение hostname с разрешённым списком адаптера;
+- запрет IP-адресов, localhost, приватных адресов, `file://`, `ftp://` и URL без
+  схемы;
+- отсутствие пробельных и управляющих символов, меняющих интерпретацию URL.
 
-Initial TikTok host allowlist:
+Первоначальный whitelist TikTok:
 
 - `tiktok.com`;
 - `www.tiktok.com`;
@@ -126,157 +130,163 @@ Initial TikTok host allowlist:
 - `vm.tiktok.com`;
 - `vt.tiktok.com`.
 
-Canonical TikTok URLs must represent `/@<account>/video/<numeric-id>`. Official short
-links may use an opaque path because TikTok resolves them; the initial host is still
-strictly allowlisted. yt-dlp receives the URL as one argument after `--`, so user text
-cannot become a command-line option.
+Канонический TikTok URL должен иметь путь `/@<account>/video/<numeric-id>`.
+Официальная короткая ссылка может иметь непрозрачный путь, потому что её разрешает
+сам TikTok; исходный hostname всё равно строго проверяется. yt-dlp получает URL одним
+аргументом после `--`, поэтому пользовательский текст не может стать параметром
+командной строки.
 
-Playlist/profile URLs are rejected. Redirect results do not grant trust to arbitrary
-user input: redirect handling remains inside the known TikTok extractor rather than a
-generic application HTTP fetcher.
+Ссылки на профили и подборки отклоняются. Перенаправления не дают доверия
+произвольному пользовательскому адресу: их обрабатывает известный TikTok-экстрактор,
+а не универсальный HTTP-клиент приложения.
 
-## User flows
+## Пользовательские сценарии
 
 ### YouTube
 
-The existing flow remains:
+Существующий сценарий сохраняется:
 
-1. validate and normalize the URL;
-2. fetch metadata;
-3. show only available, size-compatible resolutions;
-4. verify request ownership and TTL on selection;
-5. queue, download, upload, record statistics, and clean up.
+1. Проверить и нормализовать URL.
+2. Получить метаданные.
+3. Показать только доступные разрешения, проходящие оценочный лимит размера.
+4. При выборе проверить владельца запроса и TTL.
+5. Поставить в очередь, скачать, отправить, записать статистику и удалить временные
+   файлы.
 
-### TikTok video
+### Видео TikTok
 
-The TikTok flow is:
+Сценарий TikTok:
 
-1. validate the canonical or official short URL;
-2. fetch metadata through the TikTok adapter;
-3. ensure the post contains downloadable video;
-4. reject an estimate already above the upload limit;
-5. show the title and duration, then enqueue the trusted `best_video` option without
-   asking for a redundant quality choice;
-6. download, inspect, apply the actual size limit, upload, record statistics, and
-   clean up.
+1. Проверить канонический или официальный короткий URL.
+2. Получить метаданные через TikTok-адаптер.
+3. Убедиться, что публикация содержит скачиваемое видео.
+4. Отклонить публикацию, если оценочный размер уже превышает лимит отправки.
+5. Показать название и длительность, затем поставить доверенный вариант `best_video`
+   в очередь без лишнего выбора качества.
+6. Скачать, проверить файл, применить фактический лимит размера, отправить, записать
+   статистику и выполнить очистку.
 
-All existing rate limits and per-user/global concurrency limits apply equally to both
-sources.
+Существующие rate limit, пользовательский лимит и глобальный лимит параллельности
+одинаково применяются ко всем источникам.
 
-## Persistence migration
+## Миграция данных
 
-An Alembic migration generalizes existing tables without discarding history.
+Alembic-миграция обобщает существующие таблицы без потери истории.
 
-For both `downloads` and `download_requests`:
+Для `downloads` и `download_requests`:
 
-- rename `youtube_url` to `source_url`;
-- rename `youtube_video_id` to `source_media_id`;
-- add non-null `source`, backfilled to `youtube` for existing rows;
-- add non-null `media_kind`, backfilled to `video` for existing rows.
+- переименовать `youtube_url` в `source_url`;
+- переименовать `youtube_video_id` в `source_media_id`;
+- добавить обязательное поле `source`, установив `youtube` для существующих строк;
+- добавить обязательное поле `media_kind`, установив `video` для существующих строк.
 
-For `downloads`:
+Для `downloads`:
 
-- add `requested_option` as a non-null string;
-- backfill it from existing `requested_quality` as `video_<height>`;
-- retain `requested_quality` temporarily as nullable compatibility/statistics data;
-- keep `actual_quality` nullable for video height.
+- добавить обязательное строковое поле `requested_option`;
+- заполнить его из существующего `requested_quality` в виде `video_<height>`;
+- временно сохранить `requested_quality` как nullable-поле совместимости и
+  статистики;
+- сохранить `actual_quality` как необязательную фактическую высоту видео.
 
-New code writes `requested_option`; YouTube also writes numeric
-`requested_quality`. TikTok writes `best_video` and leaves `requested_quality` null.
-This avoids destroying existing quality statistics while allowing future non-video
-options. Removing the compatibility column is outside this change.
+Новый код всегда записывает `requested_option`. Для YouTube также записывается
+числовое `requested_quality`. Для TikTok записывается `best_video`, а
+`requested_quality` остаётся пустым. Так сохраняется существующая статистика качества
+и появляется возможность хранить будущие варианты не для видео. Удаление поля
+совместимости не входит в эту задачу.
 
-The request JSON remains the canonical server-side snapshot of adapter-produced
-options. Existing unexpired YouTube requests created before deployment may be cleaned
-up at startup instead of being migrated between metadata schema versions.
+JSON запроса остаётся серверным снимком сформированных адаптером вариантов.
+Незавершённые YouTube-запросы, созданные до развёртывания новой схемы метаданных,
+могут быть удалены при запуске вместо миграции между версиями JSON.
 
-## Error handling
+## Обработка ошибок
 
-Internal failures retain structured categories and sanitized logs. Users receive no
-traceback or raw yt-dlp output.
+Внутренние ошибки сохраняют структурированные категории и безопасные логи.
+Пользователь не видит traceback или необработанный вывод yt-dlp.
 
-TikTok user-facing categories include:
+Пользовательские категории ошибок TikTok:
 
-- deleted, private, or unavailable post;
-- authentication or cookies required;
-- regional restriction;
-- unsupported photo-only post;
-- temporary TikTok/yt-dlp extraction incompatibility;
-- estimated or actual file too large;
-- download timeout;
-- Telegram upload failure.
+- публикация удалена, приватна или недоступна;
+- требуется авторизация или cookies;
+- региональное ограничение;
+- фотопубликация пока не поддерживается;
+- временная несовместимость защиты TikTok и yt-dlp;
+- оценочный или фактический размер слишком велик;
+- таймаут скачивания;
+- ошибка отправки в Telegram.
 
-The existing optional cookie file is shared by yt-dlp adapters and mounted only at
-runtime. The default setup requires no cookies. Documentation will explain that
-TikTok protection can change and that a current yt-dlp build or runtime cookies may
-occasionally be necessary.
+Существующий необязательный файл cookies используется всеми yt-dlp-адаптерами и
+подключается только во время выполнения. По умолчанию cookies не требуются. В
+документации будет объяснено, что защита TikTok может изменяться и иногда может
+потребоваться актуальная версия yt-dlp или runtime cookies.
 
-## Security properties
+## Гарантии безопасности
 
-- URLs are accepted only by exact source adapters.
-- Users cannot supply subprocess flags, format selectors, paths, or filenames.
-- Output paths are resolved and must remain direct children of the generated job
-  directory.
-- Display titles are sanitized and never used to construct storage paths.
-- Callback ownership and TTL checks remain mandatory.
-- File size is checked before Telegram upload using the configured safety margin.
-- All subprocesses are terminated on timeout, cancellation, and shutdown.
-- All job directories are deleted in `finally`; startup and periodic stale cleanup
-  remain enabled.
-- Tokens, cookies, API hashes, database credentials, and token-bearing URLs are
-  excluded from logs and the repository.
+- URL принимаются только точными адаптерами источников.
+- Пользователь не может передать параметры процесса, format selector, пути или имена
+  файлов.
+- Выходные пути разрешаются в абсолютные и обязаны быть непосредственными дочерними
+  файлами созданного job-каталога.
+- Отображаемые названия очищаются и не используются для построения путей хранения.
+- Проверка владельца callback-запроса и TTL остаётся обязательной.
+- Размер файла проверяется перед отправкой с учётом настроенного запаса Telegram.
+- Дочерние процессы завершаются при таймауте, отмене и остановке приложения.
+- Job-каталоги удаляются в `finally`; очистка при запуске и периодическая очистка
+  старых файлов сохраняются.
+- Токены, cookies, API hash, параметры БД и URL с токенами исключены из логов и
+  репозитория.
 
-## Testing strategy
+## Стратегия тестирования
 
-Unit tests use fixture metadata and fake subprocesses; they never download real
-social-media content.
+Unit-тесты используют фикстуры метаданных и поддельные subprocess; реальные файлы из
+социальных сетей не скачиваются.
 
-Coverage includes:
+Покрытие включает:
 
-- canonical and official short TikTok URLs;
-- deceptive sibling domains, HTTP, credentials, ports, IPs, local hosts, invalid
-  paths, profile URLs, and control characters;
-- media registry dispatch for YouTube and TikTok;
-- TikTok video metadata and `best_video` option;
-- rejection of photo-only TikTok metadata;
-- source-specific error classification;
-- safe yt-dlp argument construction;
-- automatic TikTok queueing and retained YouTube quality callbacks;
-- request ownership and expiry for both sources;
-- timeout, cancellation, oversized output, upload failure, and cleanup;
-- repository reads and writes with generalized fields;
-- migration backfill for existing YouTube rows;
-- unchanged YouTube format selection and security behavior.
+- канонические и официальные короткие TikTok URL;
+- похожие вредоносные домены, HTTP, credentials, порты, IP, локальные адреса,
+  некорректные пути, ссылки на профили и управляющие символы;
+- выбор YouTube- и TikTok-адаптера реестром;
+- метаданные TikTok-видео и вариант `best_video`;
+- отклонение TikTok-публикаций только с фотографиями;
+- классификацию ошибок конкретной платформы;
+- безопасное построение аргументов yt-dlp;
+- автоматическую постановку TikTok в очередь и сохранение callback выбора качества
+  YouTube;
+- владельца и срок действия запросов для обоих источников;
+- таймаут, отмену, превышение размера, ошибку отправки и очистку;
+- чтение и запись обобщённых полей репозиториев;
+- перенос существующих YouTube-записей миграцией;
+- отсутствие регрессий в выборе форматов и безопасности YouTube.
 
-An optional integration test can run only when
-`RUN_INTEGRATION_TESTS=1` and a separate TikTok URL environment variable are set. It
-is excluded from normal `pytest` runs.
+Необязательный интеграционный тест запускается только при
+`RUN_INTEGRATION_TESTS=1` и наличии отдельной переменной со ссылкой TikTok. Обычный
+запуск `pytest` его не выполняет.
 
-Verification for this significant feature includes the full unit suite, Ruff checks,
-format check, Alembic migration validation, Compose configuration validation, and a
-repository secret scan where the required scanner is available. Docker containers
-will not be started or restarted unless the user explicitly requests it.
+Проверка этого значительного функционала включает полный набор unit-тестов, Ruff,
+проверку форматирования, проверку Alembic-миграции, `docker compose config` и поиск
+секретов при наличии требуемого сканера. Docker-контейнеры не запускаются и не
+перезапускаются без явного запроса пользователя.
 
-## Documentation and operations
+## Документация и эксплуатация
 
-README and the `/start` text will advertise YouTube and TikTok video support only.
-The README will document accepted TikTok links, unsupported photo posts, optional
-cookies, platform volatility, upgrade procedure for yt-dlp, database migration, and
-the unchanged Local Bot API shared-volume flow.
+README и текст `/start` будут заявлять поддержку только видео YouTube и TikTok.
+README опишет допустимые ссылки TikTok, пока не поддерживаемые фотопубликации,
+необязательные cookies, изменчивость платформы, обновление yt-dlp, миграцию БД и
+неизменившуюся схему Local Bot API с общим volume.
 
-No new externally published ports or services are required. Existing resource,
-timeout, concurrency, rate-limit, and upload-size settings apply to TikTok.
+Новые публикуемые порты или сервисы не требуются. Существующие настройки ресурсов,
+таймаутов, параллельности, rate limit и максимального размера применяются к TikTok.
 
-## Acceptance criteria
+## Критерии готовности
 
-- Existing YouTube links behave as before.
-- A valid public TikTok video or official short link is automatically queued and sent
-  through Local Bot API.
-- TikTok photo-only posts fail with a clear unsupported-format message.
-- Invalid or malicious TikTok-like URLs never reach yt-dlp.
-- Existing YouTube database history survives migration.
-- New records identify source, media kind, source media ID, URL, and requested option.
-- TikTok uses the same queue, subscription checks, limits, timeouts, cleanup, and
-  statistics lifecycle as YouTube.
-- The architecture admits a new adapter without modifying shared subprocess, queue,
-  storage, or Telegram lifecycle code.
+- Существующие ссылки YouTube работают как раньше.
+- Валидное публичное TikTok-видео или официальная короткая ссылка автоматически
+  ставится в очередь и отправляется через Local Bot API.
+- TikTok-фотопубликация получает понятную ошибку неподдерживаемого формата.
+- Некорректные и вредоносные ссылки, похожие на TikTok, не доходят до yt-dlp.
+- Существующая история YouTube сохраняется после миграции.
+- Новые записи содержат источник, тип медиа, ID публикации, URL и выбранный вариант.
+- TikTok использует ту же очередь, подписки, лимиты, таймауты, очистку и жизненный
+  цикл статистики, что и YouTube.
+- Новая площадка добавляется адаптером без изменения общих сервисов процессов,
+  очереди, хранилища и жизненного цикла Telegram-отправки.
