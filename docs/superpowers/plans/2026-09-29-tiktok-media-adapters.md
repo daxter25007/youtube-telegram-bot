@@ -49,7 +49,7 @@ asyncpg, PostgreSQL, Alembic, pytest, Ruff, Docker Compose.
 
 ---
 
-### Задача 1: Доменные модели, безопасные URL и реестр адаптеров
+### Task 1: Доменные модели, безопасные URL и реестр адаптеров
 
 **Файлы:**
 - Создать: `app/services/media/__init__.py`
@@ -83,7 +83,7 @@ asyncpg, PostgreSQL, Alembic, pytest, Ruff, Docker Compose.
   результата.
 - [ ] Закоммитить изменения сообщением `feat: add media source registry`.
 
-### Задача 2: Универсальные метаданные и политики форматов
+### Task 2: Универсальные метаданные и политики форматов
 
 **Файлы:**
 - Создать: `app/services/media/errors.py`
@@ -114,7 +114,7 @@ asyncpg, PostgreSQL, Alembic, pytest, Ruff, Docker Compose.
 - [ ] Запустить тесты метаданных и форматов до зелёного результата.
 - [ ] Закоммитить изменения сообщением `feat: add platform media metadata`.
 
-### Задача 3: Обобщение схемы PostgreSQL и репозиториев
+### Task 3: Обобщение схемы PostgreSQL и репозиториев
 
 **Файлы:**
 - Создать: `alembic/versions/20260929_0002_generalize_media_sources.py`
@@ -143,7 +143,7 @@ asyncpg, PostgreSQL, Alembic, pytest, Ruff, Docker Compose.
 - [ ] Запустить DB-тесты до зелёного результата.
 - [ ] Закоммитить изменения сообщением `feat: generalize media persistence`.
 
-### Задача 4: Общий загрузчик yt-dlp и безопасный `MediaPackage`
+### Task 4: Общий загрузчик yt-dlp и безопасный `MediaPackage`
 
 **Файлы:**
 - Создать: `app/services/media/process.py`
@@ -167,7 +167,7 @@ asyncpg, PostgreSQL, Alembic, pytest, Ruff, Docker Compose.
 - [ ] Запустить тесты загрузчика до зелёного результата.
 - [ ] Закоммитить изменения сообщением `refactor: share yt-dlp media downloader`.
 
-### Задача 5: Пакетная Telegram-отправка и жизненный цикл загрузки
+### Task 5: Пакетная Telegram-отправка и жизненный цикл загрузки
 
 **Файлы:**
 - Изменить: `app/services/telegram_files.py`
@@ -190,7 +190,7 @@ asyncpg, PostgreSQL, Alembic, pytest, Ruff, Docker Compose.
 - [ ] Запустить целевые тесты до зелёного результата.
 - [ ] Закоммитить изменения сообщением `refactor: process media packages`.
 
-### Задача 6: Telegram-роутер YouTube и TikTok
+### Task 6: Telegram-роутер YouTube и TikTok
 
 **Файлы:**
 - Изменить: `app/bot/routers/downloader.py`
@@ -213,7 +213,7 @@ asyncpg, PostgreSQL, Alembic, pytest, Ruff, Docker Compose.
 - [ ] Запустить тесты роутера до зелёного результата.
 - [ ] Закоммитить изменения сообщением `feat: download TikTok videos`.
 
-### Задача 7: Wiring, приветствие, документация и итоговая проверка
+### Task 7: Wiring, приветствие, документация и итоговая проверка
 
 **Файлы:**
 - Изменить: `app/main.py`

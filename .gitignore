@@ -30,8 +30,8 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.superpowers/sdd/
 
 dist/
 build/
 *.egg-info/
-
