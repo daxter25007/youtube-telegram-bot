@@ -16,7 +16,7 @@ class FakeBot:
 
 
 @pytest.mark.asyncio
-async def test_upload_passes_local_path_not_input_file() -> None:
+async def test_upload_passes_local_file_uri_not_input_file() -> None:
     bot = FakeBot()
     media = DownloadedMedia(
         path=Path("/shared-temp/jobs/id/media.mp4"),
@@ -31,4 +31,4 @@ async def test_upload_passes_local_path_not_input_file() -> None:
         display_filename="video.mp4",
         caption="video",
     )
-    assert bot.video == "/shared-temp/jobs/id/media.mp4"
+    assert bot.video == "file:///shared-temp/jobs/id/media.mp4"

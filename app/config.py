@@ -53,6 +53,10 @@ class Settings(BaseSettings):
                 return frozenset(int(item.strip()) for item in value.split(",") if item.strip())
             except ValueError as exc:
                 raise ValueError("ADMIN_IDS must contain only comma-separated numeric IDs") from exc
+        if isinstance(value, bool):
+            raise ValueError("ADMIN_IDS must contain only numeric IDs")
+        if isinstance(value, int):
+            return frozenset({value})
         return frozenset(value)  # type: ignore[arg-type]
 
     @field_validator("bot_token")

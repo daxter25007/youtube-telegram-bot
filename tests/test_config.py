@@ -21,6 +21,11 @@ def test_settings_parse_admin_ids_and_local_api() -> None:
     assert settings.telegram_local_api_url == "http://telegram-bot-api:8081"
 
 
+def test_settings_parse_single_admin_id_decoded_as_integer() -> None:
+    settings = valid_settings(admin_ids=784810066)
+    assert settings.admin_ids == {784810066}
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
