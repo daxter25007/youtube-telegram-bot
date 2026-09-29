@@ -6,6 +6,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import Download, DownloadStatus
+from app.services.media.models import MediaKind, MediaSource
 
 
 class DownloadRepository:
@@ -16,17 +17,23 @@ class DownloadRepository:
         self,
         *,
         user_id: int,
-        youtube_video_id: str,
-        youtube_url: str,
+        source: MediaSource,
+        media_kind: MediaKind,
+        source_media_id: str,
+        source_url: str,
         video_title: str,
-        requested_quality: int,
+        requested_option: str,
+        requested_quality: int | None,
         status: DownloadStatus = DownloadStatus.CREATED,
     ) -> Download:
         item = Download(
             user_id=user_id,
-            youtube_video_id=youtube_video_id,
-            youtube_url=youtube_url,
+            source=source,
+            media_kind=media_kind,
+            source_media_id=source_media_id,
+            source_url=source_url,
             video_title=video_title,
+            requested_option=requested_option,
             requested_quality=requested_quality,
             status=status,
         )

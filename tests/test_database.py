@@ -10,6 +10,7 @@ from app.database.models import DownloadStatus, User
 from app.database.repositories.channels import ChannelRepository
 from app.database.repositories.downloads import DownloadRepository
 from app.database.repositories.requests import DownloadRequestRepository
+from app.services.media.models import MediaKind, MediaSource
 
 
 @pytest.fixture
@@ -32,9 +33,11 @@ async def test_repositories_and_request_ownership_ttl(session) -> None:
     request = await request_repo.create(
         user_id=user.id,
         telegram_user_id=100,
-        youtube_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-        youtube_video_id="dQw4w9WgXcQ",
-        metadata={"title": "test", "qualities": []},
+        source=MediaSource.YOUTUBE,
+        media_kind=MediaKind.VIDEO,
+        source_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        source_media_id="dQw4w9WgXcQ",
+        metadata={"title": "test", "options": []},
     )
     await session.commit()
     assert await request_repo.get_owned_valid(request.id, 100, 30) is not None
@@ -54,9 +57,12 @@ async def test_repositories_and_request_ownership_ttl(session) -> None:
 
     download = await DownloadRepository(session).create(
         user_id=user.id,
-        youtube_video_id="dQw4w9WgXcQ",
-        youtube_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        source=MediaSource.YOUTUBE,
+        media_kind=MediaKind.VIDEO,
+        source_media_id="dQw4w9WgXcQ",
+        source_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         video_title="test",
+        requested_option="video_720",
         requested_quality=720,
         status=DownloadStatus.QUEUED,
     )

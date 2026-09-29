@@ -7,6 +7,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import DownloadRequest
+from app.services.media.models import MediaKind, MediaSource
 
 
 class DownloadRequestRepository:
@@ -18,16 +19,20 @@ class DownloadRequestRepository:
         *,
         user_id: int,
         telegram_user_id: int,
-        youtube_url: str,
-        youtube_video_id: str,
+        source: MediaSource,
+        media_kind: MediaKind,
+        source_url: str,
+        source_media_id: str,
         metadata: dict[str, object],
     ) -> DownloadRequest:
         request = DownloadRequest(
             id=secrets.token_urlsafe(8)[:12],
             user_id=user_id,
             telegram_user_id=telegram_user_id,
-            youtube_url=youtube_url,
-            youtube_video_id=youtube_video_id,
+            source=source,
+            media_kind=media_kind,
+            source_url=source_url,
+            source_media_id=source_media_id,
             metadata_json=metadata,
         )
         self.session.add(request)

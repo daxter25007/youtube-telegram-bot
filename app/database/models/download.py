@@ -7,6 +7,7 @@ from sqlalchemy import BigInteger, DateTime, Enum, Float, ForeignKey, Index, Int
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, TimestampMixin
+from app.services.media.models import MediaKind, MediaSource
 
 
 class DownloadStatus(StrEnum):
@@ -32,10 +33,29 @@ class Download(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
-    youtube_video_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    youtube_url: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[MediaSource] = mapped_column(
+        Enum(
+            MediaSource,
+            native_enum=False,
+            length=32,
+            values_callable=lambda members: [member.value for member in members],
+        ),
+        nullable=False,
+    )
+    media_kind: Mapped[MediaKind] = mapped_column(
+        Enum(
+            MediaKind,
+            native_enum=False,
+            length=16,
+            values_callable=lambda members: [member.value for member in members],
+        ),
+        nullable=False,
+    )
+    source_media_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
     video_title: Mapped[str] = mapped_column(String(512), nullable=False)
-    requested_quality: Mapped[int] = mapped_column(Integer, nullable=False)
+    requested_option: Mapped[str] = mapped_column(String(64), nullable=False)
+    requested_quality: Mapped[int | None] = mapped_column(Integer)
     actual_quality: Mapped[int | None] = mapped_column(Integer)
     file_size: Mapped[int | None] = mapped_column(BigInteger)
     status: Mapped[DownloadStatus] = mapped_column(

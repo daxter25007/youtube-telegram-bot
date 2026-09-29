@@ -73,6 +73,7 @@ class StatisticsService:
         )
         qualities = await session.execute(
             select(Download.requested_quality, func.count(Download.id).label("count"))
+            .where(Download.requested_quality.is_not(None))
             .group_by(Download.requested_quality)
             .order_by(func.count(Download.id).desc())
             .limit(10)
