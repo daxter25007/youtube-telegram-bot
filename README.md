@@ -1,6 +1,6 @@
 # YouTube + TikTok → Telegram Bot
 
-Готовый к эксплуатации Telegram-бот на Python 3.12, который проверяет подписку на обязательные каналы, получает метаданные YouTube и TikTok, скачивает видео через `yt-dlp`/`ffmpeg` и отправляет его через локальный Telegram Bot API Server. Для YouTube пользователь выбирает доступное качество, для TikTok бот автоматически берёт лучший видеовариант.
+Готовый к эксплуатации Telegram-бот на Python 3.12, который проверяет подписку на обязательные каналы, получает метаданные YouTube, скачивает видео через `yt-dlp`, self-hosted Cobalt и `ffmpeg`, а затем отправляет его через локальный Telegram Bot API Server. Для YouTube пользователь выбирает доступное качество. Для TikTok бот автоматически берёт лучший видеовариант: сначала через Cobalt, затем через yt-dlp как резервный способ.
 
 > Используйте загрузку только для контента, который вы вправе скачивать и распространять. Учитывайте правила исходной площадки, Telegram и законодательство вашей страны.
 
@@ -11,10 +11,11 @@ Telegram user
     ↓
 Telegram Local Bot API Server (--local, internal port 8081)
     ↓
-aiogram bot → PostgreSQL (users, requests, channels, statistics)
-    ↓
-YouTube / TikTok → source adapter → yt-dlp → ffmpeg merge/remux
-    ↓
+aiogram bot → PostgreSQL (users, requests, channels, statistics, backend результата)
+    ├─ YouTube → yt-dlp → ffmpeg merge/remux
+    └─ TikTok → Cobalt (основной) ─┐
+                  └→ yt-dlp (fallback) ─┤
+                                        ↓
 /shared-temp/jobs/<uuid>/media.mp4
     ↓ shared Docker volume, local filesystem path
 Telegram Local Bot API Server → Telegram user
@@ -25,15 +26,17 @@ Telegram Local Bot API Server → Telegram user
 Сервисы Compose:
 
 - `bot` — aiogram 3.31, async SQLAlchemy, yt-dlp, ffmpeg, поддерживаемый Node 22 runtime для YouTube EJS challenges;
+- `cobalt` — отдельный self-hosted processing API для TikTok, закреплённый tag+digest, доступный только внутри Docker network;
 - `telegram-bot-api` — поддерживаемый образ `aiogram/telegram-bot-api`, собранный из официального `tdlib/telegram-bot-api`, режим local; multi-arch digest закреплён в Compose;
 - `postgres` — PostgreSQL 17.
 
-PostgreSQL и порт 8081 не публикуются на хост. Они доступны только внутри Docker network. Контейнер бота работает не от root.
+PostgreSQL, Local Bot API и Cobalt не публикуются на хост. Они доступны только внутри Docker network. Контейнер бота работает не от root. Недоступность Cobalt не блокирует запуск бота и YouTube: для TikTok менеджер автоматически попробует yt-dlp в рамках того же общего таймаута.
 
 ## Возможности
 
 - URL `youtube.com/watch`, `youtu.be`, `youtube.com/shorts` с жёстким whitelist хостов;
 - публичные TikTok-видео по каноническим ссылкам и официальным коротким ссылкам `vm.tiktok.com` / `vt.tiktok.com`;
+- Cobalt как основной TikTok-backend с потоковой записью сразу на диск и yt-dlp как автоматический fallback;
 - расширяемый реестр адаптеров для будущего добавления Instagram, VK, RuTube, фото и аудио без изменения очереди и временного хранилища;
 - 360p, 480p, 720p, 1080p, 1440p, 2160p — только когда формат существует и оценочный размер не превышает лимит;
 - предпочтение MP4/H.264 + M4A/AAC, fallback на лучший совместимый video/audio без hardcoded format ID;
@@ -104,6 +107,13 @@ docker compose ps
 docker compose logs -f bot
 ```
 
+Эта команда запускает также внутренний сервис `cobalt`. Отдельные токены или публичный домен для него не нужны. Проверить его состояние можно командами:
+
+```bash
+docker compose ps cobalt
+docker compose logs -f cobalt
+```
+
 Миграции Alembic автоматически применяются контейнером до запуска polling. Вручную:
 
 ```bash
@@ -148,7 +158,11 @@ Local Bot API официально поддерживает upload до 2000 MB 
 
 ### Ограничения TikTok
 
-На текущем этапе поддерживаются только публичные видеопубликации. Фотокарусели и скачивание отдельной аудиодорожки запланированы, но пока бот вернёт понятное сообщение о неподдерживаемом формате. Защита TikTok периодически изменяется: если публичное видео перестало извлекаться, сначала обновите yt-dlp пересборкой образа. Для публикаций, требующих входа, можно подключить runtime cookies описанным ниже способом; cookies никогда не добавляются в Git или Docker image.
+На текущем этапе поддерживаются только публичные видеопубликации. Фотокарусели и скачивание отдельной аудиодорожки запланированы, но пока бот вернёт понятное сообщение о неподдерживаемом формате.
+
+TikTok сначала обрабатывает Cobalt. Ответ Cobalt скачивается потоково в `<job>/media.part`, проверяется по заголовку и фактическому числу байтов, затем атомарно переименовывается. Redirect URL повторно проверяются: credentials, private/local IP, нестандартные внешние порты и опасные схемы запрещены. Если Cobalt временно недоступен или не смог получить видео, каталог очищается и тот же job автоматически пробует yt-dlp. Если отказали оба способа, пользователь получает одну понятную ошибку без traceback.
+
+Для публикаций, требующих входа, yt-dlp можно позднее снабдить runtime cookies описанным ниже способом; cookies никогда не добавляются в Git или Docker image. Cobalt в текущей конфигурации рассчитан на публичные видео.
 
 ## Cookies (опционально)
 
@@ -173,6 +187,10 @@ services:
 - `RATE_LIMIT_URLS=5`, `RATE_LIMIT_WINDOW_SECONDS=60`;
 - `DOWNLOAD_REQUEST_TTL_MINUTES=30`;
 - `PROGRESS_UPDATE_SECONDS=3`.
+- `COBALT_ENABLED=true` — включить Cobalt как основной TikTok-backend;
+- `COBALT_API_URL=http://cobalt:9000` — только внутренний origin Compose-сервиса;
+- `COBALT_REQUEST_TIMEOUT_SECONDS=30` — timeout получения download instruction;
+- `COBALT_STREAM_TIMEOUT_SECONDS=1800` — timeout потокового ответа Cobalt.
 
 `TELEGRAM_LOCAL_API_URL` должен оставаться `http://telegram-bot-api:8081` в Docker. В local mode конфигурация отвергает `api.telegram.org`. Токен, API hash и DSN маскируются в логах; environment целиком не логируется.
 
@@ -193,7 +211,7 @@ Unit tests не требуют token, сети социальных площад
 RUN_INTEGRATION_TESTS=1 pytest -m integration
 ```
 
-Для integration suite экспортируйте `DATABASE_URL`, `TELEGRAM_LOCAL_API_URL`, `BOT_TOKEN`; сетевые metadata-тесты дополнительно запускаются при наличии `INTEGRATION_YOUTUBE_URL` и/или `INTEGRATION_TIKTOK_URL`.
+Для integration suite экспортируйте `DATABASE_URL`, `TELEGRAM_LOCAL_API_URL`, `BOT_TOKEN`; сетевые проверки дополнительно запускаются при наличии `INTEGRATION_YOUTUBE_URL` и/или `INTEGRATION_TIKTOK_URL`. Проверка Cobalt использует `COBALT_API_URL` и не выводит исходный или tunnel URL.
 
 Проверка Compose:
 
@@ -234,6 +252,16 @@ docker compose pull telegram-bot-api
 docker compose up -d telegram-bot-api bot
 ```
 
+Образ Cobalt также закреплён точным tag и multi-arch digest. Перед обновлением проверьте [официальный пакет](https://github.com/imputnet/cobalt/pkgs/container/cobalt) и [заметки о версиях](https://github.com/imputnet/cobalt/discussions/categories/announcements), замените tag+digest и примените обновление:
+
+```bash
+docker compose pull cobalt
+docker compose up -d cobalt
+docker compose logs -f cobalt
+```
+
+Cobalt распространяется по AGPL-3.0; исходный код и лицензия доступны в [официальном репозитории imputnet/cobalt](https://github.com/imputnet/cobalt). В проект не включён публичный Cobalt instance и не используется чужой публичный API.
+
 ## Backup PostgreSQL
 
 Создать backup без публикации порта БД:
@@ -260,7 +288,8 @@ Named volumes `telegram-bot-api-data` и `postgres-data` не удаляйте �
 - URL проверяется адаптером конкретной площадки; private/local hosts, похожие домены, credentials, нестандартные порты и другие схемы отвергаются;
 - пользовательский ввод никогда не попадает в shell: subprocess запускаются списком аргументов;
 - title очищается и используется только как display filename;
-- PostgreSQL и Local Bot API не имеют host `ports`;
+- PostgreSQL, Local Bot API и Cobalt не имеют host `ports`;
+- Cobalt работает read-only с `no-new-privileges` и без Docker socket;
 - секреты не передаются в CLI arguments приложения и маскируются formatter-ом логов.
 
 ## Структура
@@ -269,7 +298,8 @@ Named volumes `telegram-bot-api-data` и `postgres-data` не удаляйте �
 app/
   bot/{routers,keyboards,middlewares,states}/
   database/{models,repositories}/
-  services/media/{adapters,metadata,downloader,models,registry}.py
+  services/cobalt/{client,models,security}.py
+  services/media/{adapters,backends,metadata,downloader,models,probe,registry}.py
   services/youtube/  # совместимые YouTube format helpers
   services/{cleanup,download_manager,queue,statistics,subscriptions,telegram_files}.py
   utils/

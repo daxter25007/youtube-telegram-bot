@@ -66,6 +66,7 @@ class DownloadBackend(StrEnum):
     YTDLP = "ytdlp"
     COBALT = "cobalt"
 
+
 @dataclass(frozen=True, slots=True)
 class MediaDownloadRequest:
     source: MediaSource
@@ -73,14 +74,18 @@ class MediaDownloadRequest:
     option_key: str
     policy: DownloadPolicy
 
+
 @dataclass(frozen=True, slots=True)
 class BackendResult:
     package: MediaPackage
     backend: DownloadBackend
 
+
 class MediaBackend(Protocol):
     name: DownloadBackend
+
     async def download(request, job_dir, progress) -> MediaPackage: ...
+
 
 class MediaBackendRouter:
     async def download(request, job_dir, progress, on_fallback) -> BackendResult: ...

@@ -7,6 +7,8 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.services.cobalt.client import CobaltClient
+from app.services.cobalt.security import SafeRemoteUrlValidator
 from app.services.media.metadata import YtDlpMetadataService
 from app.services.media.registry import MediaRegistry
 
@@ -69,3 +71,21 @@ async def test_tiktok_metadata_when_url_is_provided() -> None:
     ).fetch(parsed)
     assert metadata.media_id
     assert metadata.options[0].key == "best_video"
+
+
+@pytest.mark.asyncio
+async def test_cobalt_prepares_tiktok_video_when_url_is_provided() -> None:
+    url = os.getenv("INTEGRATION_TIKTOK_URL")
+    base_url = os.getenv("COBALT_API_URL")
+    if not url or not base_url:
+        pytest.skip("INTEGRATION_TIKTOK_URL or COBALT_API_URL is not set")
+    validator = SafeRemoteUrlValidator()
+    async with aiohttp.ClientSession() as session:
+        response = await CobaltClient(
+            base_url=base_url,
+            request_timeout_seconds=30,
+            session=session,
+            validator=validator,
+        ).prepare(url)
+
+    assert response.url
