@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import sys
 from collections.abc import Awaitable, Callable
@@ -13,6 +12,7 @@ from app.services.media.models import (
     MediaKind,
     MediaPackage,
 )
+from app.services.media.probe import probe_media
 from app.services.media.process import stop_process, subprocess_options
 
 ProgressCallback = Callable[[str, float | None], Awaitable[None]]
@@ -147,39 +147,9 @@ class MediaDownloader:
         return max(candidates, key=lambda item: item.stat().st_mtime, default=None)
 
     async def _probe(self, path: Path) -> dict[str, int | None]:
-        process = await asyncio.create_subprocess_exec(
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height:format=duration",
-            "-of",
-            "json",
-            str(path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            **subprocess_options(),
-        )
-        try:
-            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=30)
-        except asyncio.CancelledError:
-            await stop_process(process)
-            raise
-        except TimeoutError:
-            await stop_process(process)
-            return {"width": None, "height": None, "duration": None}
-        if process.returncode != 0:
-            return {"width": None, "height": None, "duration": None}
-        try:
-            payload = json.loads(stdout)
-            stream = (payload.get("streams") or [{}])[0]
-            duration = (payload.get("format") or {}).get("duration")
-            return {
-                "width": int(stream["width"]) if stream.get("width") else None,
-                "height": int(stream["height"]) if stream.get("height") else None,
-                "duration": int(float(duration)) if duration else None,
-            }
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return {"width": None, "height": None, "duration": None}
+        probe = await probe_media(path)
+        return {
+            "width": probe.width,
+            "height": probe.height,
+            "duration": probe.duration,
+        }
