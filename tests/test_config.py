@@ -19,6 +19,10 @@ def test_settings_parse_admin_ids_and_local_api() -> None:
     settings = valid_settings(admin_ids="1, 2")
     assert settings.admin_ids == {1, 2}
     assert settings.telegram_local_api_url == "http://telegram-bot-api:8081"
+    assert settings.cobalt_enabled is True
+    assert settings.cobalt_api_url == "http://cobalt:9000"
+    assert settings.cobalt_request_timeout_seconds == 30
+    assert settings.cobalt_stream_timeout_seconds == 1800
 
 
 def test_settings_parse_single_admin_id_decoded_as_integer() -> None:
@@ -36,6 +40,8 @@ def test_settings_parse_single_admin_id_decoded_as_integer() -> None:
             "postgresql+asyncpg://user:change-me-before-production@postgres/db",
         ),
         ("telegram_local_api_url", "https://api.telegram.org"),
+        ("cobalt_api_url", "file:///etc/passwd"),
+        ("cobalt_api_url", "http://user:password@cobalt:9000"),
     ],
 )
 def test_settings_reject_unsafe_or_invalid_values(field: str, value: str) -> None:

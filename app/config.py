@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -30,6 +31,11 @@ class Settings(BaseSettings):
     max_downloads_per_user: int = Field(default=1, ge=1, le=10)
     download_timeout_seconds: int = Field(default=1800, ge=30)
     metadata_timeout_seconds: int = Field(default=120, ge=10)
+
+    cobalt_enabled: bool = True
+    cobalt_api_url: str = "http://cobalt:9000"
+    cobalt_request_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    cobalt_stream_timeout_seconds: int = Field(default=1800, ge=30)
 
     temp_root: Path = Path("/shared-temp/jobs")
     temp_file_ttl_hours: int = Field(default=6, ge=1)
@@ -89,6 +95,23 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_api_url(cls, value: str) -> str:
         return value.rstrip("/")
+
+    @field_validator("cobalt_api_url")
+    @classmethod
+    def validate_cobalt_api_url(cls, value: str) -> str:
+        normalized = value.rstrip("/")
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            raise ValueError("COBALT_API_URL must be a plain HTTP(S) origin")
+        return normalized
 
     @field_validator("log_level")
     @classmethod
