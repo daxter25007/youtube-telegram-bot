@@ -7,8 +7,8 @@ from typing import Any
 
 from app.services.media.errors import MetadataError, classify_metadata_error
 from app.services.media.models import MediaMetadata, ParsedMediaUrl
+from app.services.media.process import stop_process, subprocess_options
 from app.services.media.registry import MediaRegistry
-from app.services.youtube.process import stop_process, subprocess_options
 
 
 class YtDlpMetadataService:
