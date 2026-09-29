@@ -14,7 +14,14 @@ from app.database.repositories.downloads import DownloadRepository
 from app.database.session import Database
 from app.services.cleanup import TempStorage
 from app.services.download_manager import DownloadManager
-from app.services.youtube.downloader import DownloadedMedia, DownloadError
+from app.services.media.downloader import DownloadError
+from app.services.media.models import (
+    DownloadPolicy,
+    MediaArtifact,
+    MediaKind,
+    MediaPackage,
+    MediaSource,
+)
 
 
 class FakeMessage:
@@ -48,7 +55,26 @@ class SuccessfulDownloader:
         path = job_dir / "media.mp4"
         path.write_bytes(b"video")
         await progress("downloading", 50)
-        return DownloadedMedia(path=path, width=10, height=360, duration=1)
+        return MediaPackage(
+            artifacts=(
+                MediaArtifact(
+                    path=path,
+                    media_kind=MediaKind.VIDEO,
+                    width=10,
+                    height=360,
+                    duration=1,
+                ),
+            )
+        )
+
+
+class OversizedDownloader:
+    async def download(self, *, job_dir: Path, progress, **kwargs):
+        path = job_dir / "media.mp4"
+        path.write_bytes(b"x" * 1_001)
+        return MediaPackage(
+            artifacts=(MediaArtifact(path=path, media_kind=MediaKind.VIDEO, height=720),)
+        )
 
 
 class FailingDownloader:
@@ -72,9 +98,12 @@ async def make_database(tmp_path: Path) -> tuple[Database, int, int]:
         await session.flush()
         download = await DownloadRepository(session).create(
             user_id=user.id,
-            youtube_video_id="dQw4w9WgXcQ",
-            youtube_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            source=MediaSource.YOUTUBE,
+            media_kind=MediaKind.VIDEO,
+            source_media_id="dQw4w9WgXcQ",
+            source_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
             video_title="test",
+            requested_option="video_360",
             requested_quality=360,
             status=DownloadStatus.QUEUED,
         )
@@ -113,9 +142,12 @@ async def run_case(
         telegram_user_id=123,
         user_id=user_id,
         download_id=download_id,
-        youtube_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        source_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        source=MediaSource.YOUTUBE,
+        media_kind=MediaKind.VIDEO,
+        option_key="video_360",
+        policy=DownloadPolicy(format_selector="best[height<=360]"),
         title="test",
-        quality=360,
         progress_message=message,  # type: ignore[arg-type]
     )
     async with database.session() as session:
@@ -157,3 +189,11 @@ async def test_cleanup_after_telegram_upload_error(tmp_path: Path) -> None:
     assert status == DownloadStatus.FAILED
     assert jobs == []
     assert any("отправить файл" in text for text in texts)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_after_actual_file_exceeds_limit(tmp_path: Path) -> None:
+    status, jobs, texts = await run_case(tmp_path, OversizedDownloader())
+    assert status == DownloadStatus.TOO_LARGE
+    assert jobs == []
+    assert any("слишком большим" in text for text in texts)

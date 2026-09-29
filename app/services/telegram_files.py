@@ -7,7 +7,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 
-from app.services.youtube.downloader import DownloadedMedia
+from app.services.media.models import MediaKind, MediaPackage
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,16 +16,27 @@ class UploadResult:
     sent_as_document: bool
 
 
+class UnsupportedMediaPackageError(RuntimeError):
+    pass
+
+
 class TelegramFileService:
     async def send(
         self,
         bot: Bot,
         *,
         chat_id: int,
-        media: DownloadedMedia,
+        package: MediaPackage,
         display_filename: str,
         caption: str,
     ) -> UploadResult:
+        if len(package.artifacts) != 1:
+            raise UnsupportedMediaPackageError(
+                "Текущая версия отправляет только один медиафайл за задачу"
+            )
+        media = package.artifacts[0]
+        if media.media_kind is not MediaKind.VIDEO:
+            raise UnsupportedMediaPackageError("Текущая версия отправляет только видео")
         # Local Bot API expects the file: URI scheme for server-side filesystem
         # uploads. FSInputFile would stream the entire file through Python.
         local_uri = f"file://{quote(media.path.as_posix(), safe='/')}"

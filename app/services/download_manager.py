@@ -17,9 +17,10 @@ from app.database.repositories.downloads import DownloadRepository
 from app.database.repositories.users import UserRepository
 from app.database.session import Database
 from app.services.cleanup import TempStorage
+from app.services.media.downloader import DownloadError, MediaDownloader
+from app.services.media.models import DownloadPolicy, MediaKind, MediaSource
 from app.services.subscriptions import SubscriptionService
 from app.services.telegram_files import TelegramFileService
-from app.services.youtube.downloader import DownloadError, YouTubeDownloader
 from app.utils.filenames import sanitize_display_filename
 from app.utils.filesize import is_too_large
 
@@ -66,7 +67,7 @@ class DownloadManager:
         database: Database,
         settings: Settings,
         storage: TempStorage,
-        downloader: YouTubeDownloader,
+        downloader: MediaDownloader,
         subscriptions: SubscriptionService,
         telegram_files: TelegramFileService,
     ) -> None:
@@ -92,9 +93,12 @@ class DownloadManager:
         telegram_user_id: int,
         user_id: int,
         download_id: int,
-        youtube_url: str,
+        source_url: str,
+        source: MediaSource,
+        media_kind: MediaKind,
+        option_key: str,
+        policy: DownloadPolicy,
         title: str,
-        quality: int,
         progress_message: Message,
     ) -> None:
         started = time.monotonic()
@@ -121,19 +125,26 @@ class DownloadManager:
                         await self._status(download_id, DownloadStatus.MERGING)
                     await reporter.update(stage, percent)
 
-                media = await self.downloader.download(
-                    url=youtube_url,
-                    quality=quality,
+                package = await self.downloader.download(
+                    url=source_url,
+                    policy=policy,
                     job_dir=job_dir,
                     progress=progress,
                 )
-                file_size = await asyncio.to_thread(os.path.getsize, media.path)
-                if is_too_large(file_size, self.settings.max_upload_bytes):
+                if not package.artifacts:
+                    raise DownloadError("Загрузчик вернул пустой пакет")
+                file_sizes = [
+                    await asyncio.to_thread(os.path.getsize, artifact.path)
+                    for artifact in package.artifacts
+                ]
+                file_size = sum(file_sizes)
+                primary = package.artifacts[0]
+                if any(is_too_large(size, self.settings.max_upload_bytes) for size in file_sizes):
                     await self._status(
                         download_id,
                         DownloadStatus.TOO_LARGE,
                         file_size=file_size,
-                        actual_quality=media.height,
+                        actual_quality=primary.height,
                         processing_seconds=time.monotonic() - started,
                     )
                     await reporter.update(
@@ -147,16 +158,20 @@ class DownloadManager:
                 await self.telegram_files.send(
                     bot,
                     chat_id=chat_id,
-                    media=media,
-                    display_filename=sanitize_display_filename(title, media.path.suffix or ".mp4"),
-                    caption=f"🎬 {title}\n📺 {media.height or quality}p",
+                    package=package,
+                    display_filename=sanitize_display_filename(
+                        title, primary.path.suffix or ".mp4"
+                    ),
+                    caption=(
+                        f"🎬 {title}\n📺 {primary.height}p" if primary.height else f"🎬 {title}"
+                    ),
                 )
                 elapsed = time.monotonic() - started
                 async with self.database.session() as session:
                     await DownloadRepository(session).set_status(
                         download_id,
                         DownloadStatus.COMPLETED,
-                        actual_quality=media.height or quality,
+                        actual_quality=primary.height,
                         file_size=file_size,
                         processing_seconds=elapsed,
                     )
@@ -183,7 +198,13 @@ class DownloadManager:
             )
             raise
         except DownloadError:
-            logger.exception("yt-dlp download failed for download_id=%s", download_id)
+            logger.exception(
+                "yt-dlp download failed for download_id=%s source=%s kind=%s option=%s",
+                download_id,
+                source.value,
+                media_kind.value,
+                option_key,
+            )
             await self._status(
                 download_id,
                 DownloadStatus.FAILED,
