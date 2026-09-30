@@ -24,6 +24,9 @@ class FakeBot:
         self.reject_video = reject_video
         self.calls: list[tuple[str, object, dict[str, object]]] = []
 
+    async def get_file(self, file_id: str):
+        return SimpleNamespace(file_path=file_id)
+
     async def send_video(self, chat_id: int, *, video: object, **kwargs: object):
         self.calls.append(("video", video, kwargs))
         if self.reject_video:

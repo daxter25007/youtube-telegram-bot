@@ -6,6 +6,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
@@ -16,6 +17,7 @@ from app.database.models import DownloadStatus
 from app.database.repositories.channels import ChannelRepository
 from app.database.repositories.downloads import DownloadRepository
 from app.database.repositories.media_cache import MediaCacheRepository
+from app.database.repositories.media_manifests import MediaManifestRepository
 from app.database.repositories.users import UserRepository
 from app.database.session import Database
 from app.services.cleanup import TempStorage
@@ -24,11 +26,25 @@ from app.services.media.backends.base import (
     BackendErrorKind,
     DownloadBackend,
     MediaDownloadRequest,
+    MediaPartFailure,
+    PreparedMedia,
 )
 from app.services.media.backends.router import MediaBackendRouter
-from app.services.media.models import DownloadPolicy, MediaKind, MediaSource
+from app.services.media.models import (
+    DownloadPolicy,
+    MediaArtifact,
+    MediaKind,
+    MediaPackage,
+    MediaPart,
+    MediaSource,
+)
 from app.services.subscriptions import SubscriptionService
-from app.services.telegram_files import TelegramFileService
+from app.services.telegram_files import (
+    InvalidCachedPartError,
+    TelegramFileService,
+    TelegramPhotoInput,
+    UploadResult,
+)
 from app.utils.filesize import is_too_large
 
 logger = logging.getLogger(__name__)
@@ -184,6 +200,8 @@ class DownloadManager:
             await self.telegram_files.send_cached(
                 bot,
                 chat_id=chat_id,
+                part_key=option_key,
+                media_kind=media_kind,
                 file_id=cached.telegram_file_id,
                 sent_as_document=cached.sent_as_document,
                 caption=format_video_caption(
@@ -220,6 +238,76 @@ class DownloadManager:
             await progress_message.delete()
         except TelegramAPIError:
             logger.debug("Cached progress message could not be deleted")
+        return True
+
+    async def try_cached_publication(
+        self,
+        *,
+        bot: Bot,
+        chat_id: int,
+        user_id: int,
+        download_id: int,
+        source_media_id: str,
+        title: str,
+        source_url: str,
+        progress_message: Message,
+    ) -> bool:
+        started = time.monotonic()
+        async with self.database.session() as session:
+            manifest = await MediaManifestRepository(session).get(
+                source=MediaSource.TIKTOK,
+                source_media_id=source_media_id,
+            )
+            if manifest is None:
+                return False
+            parts = manifest.parts
+            identities = {(part.media_kind, part.key) for part in parts}
+            cached = await MediaCacheRepository(session).get_many(
+                source=MediaSource.TIKTOK,
+                source_media_id=source_media_id,
+                identities=identities,
+            )
+        if len(cached) != len(parts):
+            return False
+        caption = format_video_caption(
+            title=title,
+            source_url=source_url,
+            height=None,
+            bot_username=self.bot_username,
+        )
+        try:
+            await self._deliver_parts(
+                bot=bot,
+                chat_id=chat_id,
+                parts=parts,
+                cached=cached,
+                artifacts={},
+                caption=caption,
+            )
+        except InvalidCachedPartError as error:
+            invalid = next(
+                (item for (kind, key), item in cached.items() if key == error.part_key),
+                None,
+            )
+            if invalid is not None:
+                async with self.database.session() as session:
+                    await MediaCacheRepository(session).delete(invalid.id)
+            return False
+        async with self.database.session() as session:
+            repository = MediaCacheRepository(session)
+            for item in cached.values():
+                await repository.touch(item.id)
+            await DownloadRepository(session).set_status(
+                download_id,
+                DownloadStatus.COMPLETED,
+                processing_seconds=time.monotonic() - started,
+                cache_hit=True,
+            )
+            await UserRepository(session).increment_downloads(user_id)
+        try:
+            await progress_message.delete()
+        except TelegramAPIError:
+            logger.debug("Cached publication progress message could not be deleted")
         return True
 
     async def run(
@@ -279,6 +367,31 @@ class DownloadManager:
                         force=True,
                     )
 
+                prepared_parts: tuple[MediaPart, ...] = ()
+                cached_parts: dict[tuple[MediaKind, str], object] = {}
+
+                async def on_prepared(prepared: PreparedMedia) -> frozenset[str]:
+                    nonlocal prepared_parts, cached_parts
+                    prepared_parts = prepared.parts
+                    identities = {(part.media_kind, part.key) for part in prepared.parts}
+                    async with self.database.session() as session:
+                        if source is MediaSource.TIKTOK:
+                            await MediaManifestRepository(session).upsert(
+                                source=source,
+                                source_media_id=source_media_id,
+                                parts=prepared.parts,
+                            )
+                        cached_parts = await MediaCacheRepository(session).get_many(
+                            source=source,
+                            source_media_id=source_media_id,
+                            identities=identities,
+                        )
+                    return frozenset(
+                        part.key
+                        for part in prepared.parts
+                        if (part.media_kind, part.key) not in cached_parts
+                    )
+
                 result = await self.backend_router.download(
                     MediaDownloadRequest(
                         source=source,
@@ -289,72 +402,120 @@ class DownloadManager:
                     job_dir,
                     progress,
                     on_fallback,
+                    on_prepared,
                 )
                 package = result.package
-                if not package.artifacts:
+                if not prepared_parts:
+                    prepared_parts = tuple(
+                        MediaPart(
+                            key=artifact.part_key,
+                            media_kind=artifact.media_kind,
+                            position=index,
+                        )
+                        for index, artifact in enumerate(package.artifacts)
+                    )
+                if not package.artifacts and not cached_parts:
                     raise BackendError(
                         "Загрузчик вернул пустой пакет",
                         kind=BackendErrorKind.RETRYABLE,
                     )
-                file_sizes = [
-                    await asyncio.to_thread(os.path.getsize, artifact.path)
-                    for artifact in package.artifacts
-                ]
+                valid_artifacts: list[MediaArtifact] = []
+                failures = list(package.failures)
+                file_sizes: list[int] = []
+                for artifact in package.artifacts:
+                    size = await asyncio.to_thread(os.path.getsize, artifact.path)
+                    if is_too_large(size, self.settings.max_upload_bytes):
+                        failures.append(
+                            MediaPartFailure(
+                                part_key=artifact.part_key,
+                                media_kind=artifact.media_kind,
+                                error_kind=BackendErrorKind.TOO_LARGE,
+                            )
+                        )
+                        continue
+                    valid_artifacts.append(artifact)
+                    file_sizes.append(size)
                 file_size = sum(file_sizes)
-                primary = package.artifacts[0]
-                if any(is_too_large(size, self.settings.max_upload_bytes) for size in file_sizes):
+                if not valid_artifacts and not cached_parts:
+                    all_too_large = failures and all(
+                        isinstance(failure, MediaPartFailure)
+                        and failure.error_kind is BackendErrorKind.TOO_LARGE
+                        for failure in failures
+                    )
                     await self._status(
                         download_id,
-                        DownloadStatus.TOO_LARGE,
+                        DownloadStatus.TOO_LARGE if all_too_large else DownloadStatus.FAILED,
                         file_size=file_size,
-                        actual_quality=primary.height,
                         processing_seconds=time.monotonic() - started,
                     )
                     await reporter.update(
-                        "⚠️ Видео получилось слишком большим для отправки в Telegram. "
-                        "Выберите более низкое качество.",
+                        (
+                            "⚠️ Файл получился слишком большим для отправки в Telegram."
+                            if all_too_large
+                            else "❌ Не удалось скачать медиа. Попробуйте позже."
+                        ),
                         force=True,
                     )
                     return
                 await self._status(download_id, DownloadStatus.UPLOADING, file_size=file_size)
                 await reporter.update("📤 Отправляю в Telegram...", force=True)
-                upload_result = await self.telegram_files.send(
-                    bot,
+                artifacts_by_key = {artifact.part_key: artifact for artifact in valid_artifacts}
+                upload_results = await self._deliver_parts(
+                    bot=bot,
                     chat_id=chat_id,
-                    package=package,
+                    parts=prepared_parts,
+                    cached=cached_parts,
+                    artifacts=artifacts_by_key,
                     caption=format_video_caption(
                         title=title,
                         source_url=source_url,
-                        height=primary.height,
+                        height=(valid_artifacts[0].height if valid_artifacts else None),
                         bot_username=self.bot_username,
                     ),
                 )
+                new_results = [
+                    upload
+                    for upload in upload_results
+                    if (upload.media_kind, upload.part_key) not in cached_parts
+                ]
                 elapsed = time.monotonic() - started
                 async with self.database.session() as session:
-                    await MediaCacheRepository(session).store(
-                        source=source,
-                        source_media_id=source_media_id,
-                        media_kind=media_kind,
-                        requested_option=option_key,
-                        telegram_file_id=upload_result.file_id,
-                        telegram_file_unique_id=upload_result.file_unique_id,
-                        sent_as_document=upload_result.sent_as_document,
-                        actual_quality=primary.height,
-                        file_size=file_size,
-                    )
+                    cache_repository = MediaCacheRepository(session)
+                    for upload in new_results:
+                        artifact = artifacts_by_key[upload.part_key]
+                        await cache_repository.store(
+                            source=source,
+                            source_media_id=source_media_id,
+                            media_kind=upload.media_kind,
+                            requested_option=(
+                                option_key if source is MediaSource.YOUTUBE else upload.part_key
+                            ),
+                            telegram_file_id=upload.file_id,
+                            telegram_file_unique_id=upload.file_unique_id,
+                            sent_as_document=upload.sent_as_document,
+                            actual_quality=artifact.height,
+                            file_size=await asyncio.to_thread(os.path.getsize, artifact.path),
+                        )
+                    primary = valid_artifacts[0] if valid_artifacts else None
                     await DownloadRepository(session).set_status(
                         download_id,
                         DownloadStatus.COMPLETED,
-                        actual_quality=primary.height,
+                        actual_quality=primary.height if primary else None,
                         file_size=file_size,
                         processing_seconds=elapsed,
                         backend=result.backend,
                     )
                     await UserRepository(session).increment_downloads(user_id)
-                try:
-                    await progress_message.delete()
-                except TelegramAPIError:
-                    logger.debug("Completed progress message could not be deleted")
+                if failures:
+                    await reporter.update(
+                        "⚠️ Публикация отправлена частично: некоторые файлы недоступны.",
+                        force=True,
+                    )
+                else:
+                    try:
+                        await progress_message.delete()
+                    except TelegramAPIError:
+                        logger.debug("Completed progress message could not be deleted")
         except TimeoutError:
             await self._status(
                 download_id,
@@ -425,6 +586,98 @@ class DownloadManager:
         finally:
             if job_dir is not None:
                 await asyncio.shield(self.storage.remove_job(job_dir))
+
+    async def _deliver_parts(
+        self,
+        *,
+        bot: Bot,
+        chat_id: int,
+        parts: tuple[MediaPart, ...],
+        cached: dict[tuple[MediaKind, str], object],
+        artifacts: dict[str, MediaArtifact],
+        caption: str,
+    ) -> tuple[UploadResult, ...]:
+        results: list[UploadResult] = []
+        ordered = tuple(sorted(parts, key=lambda part: part.position))
+        for part in ordered:
+            if part.media_kind is not MediaKind.VIDEO:
+                continue
+            cached_item = cached.get((part.media_kind, part.key))
+            if cached_item is not None:
+                results.append(
+                    await self.telegram_files.send_cached(
+                        bot,
+                        chat_id=chat_id,
+                        part_key=part.key,
+                        media_kind=part.media_kind,
+                        file_id=cached_item.telegram_file_id,  # type: ignore[attr-defined]
+                        sent_as_document=cached_item.sent_as_document,  # type: ignore[attr-defined]
+                        caption=caption,
+                    )
+                )
+            elif part.key in artifacts:
+                results.extend(
+                    await self.telegram_files.send_artifacts(
+                        bot,
+                        chat_id=chat_id,
+                        package=MediaPackage(artifacts=(artifacts[part.key],)),
+                        caption=caption,
+                    )
+                )
+        photo_parts = [part for part in ordered if part.media_kind is MediaKind.PHOTO]
+        photo_inputs: list[TelegramPhotoInput] = []
+        for part in photo_parts:
+            cached_item = cached.get((part.media_kind, part.key))
+            if cached_item is not None:
+                photo_inputs.append(
+                    TelegramPhotoInput(
+                        part_key=part.key,
+                        media=cached_item.telegram_file_id,  # type: ignore[attr-defined]
+                        cached=True,
+                    )
+                )
+            elif artifact := artifacts.get(part.key):
+                photo_inputs.append(
+                    TelegramPhotoInput(
+                        part_key=part.key,
+                        media=f"file://{quote(artifact.path.as_posix(), safe='/')}",
+                    )
+                )
+        if photo_inputs:
+            results.extend(
+                await self.telegram_files.send_photo_album(
+                    bot,
+                    chat_id=chat_id,
+                    photos=photo_inputs,
+                    caption=caption,
+                )
+            )
+        for part in ordered:
+            if part.media_kind is not MediaKind.AUDIO:
+                continue
+            cached_item = cached.get((part.media_kind, part.key))
+            if cached_item is not None:
+                results.append(
+                    await self.telegram_files.send_cached(
+                        bot,
+                        chat_id=chat_id,
+                        part_key=part.key,
+                        media_kind=part.media_kind,
+                        file_id=cached_item.telegram_file_id,  # type: ignore[attr-defined]
+                        sent_as_document=cached_item.sent_as_document,  # type: ignore[attr-defined]
+                        caption=caption,
+                    )
+                )
+            elif part.key in artifacts:
+                results.extend(
+                    await self.telegram_files.send_artifacts(
+                        bot,
+                        chat_id=chat_id,
+                        package=MediaPackage(artifacts=(artifacts[part.key],)),
+                        caption=caption,
+                    )
+                )
+        return tuple(results)
 
     async def _status(
         self,

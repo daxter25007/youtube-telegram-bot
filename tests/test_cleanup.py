@@ -21,12 +21,14 @@ from app.services.media.backends.base import (
     BackendErrorKind,
     BackendResult,
     DownloadBackend,
+    PreparedMedia,
 )
 from app.services.media.models import (
     DownloadPolicy,
     MediaArtifact,
     MediaKind,
     MediaPackage,
+    MediaPart,
     MediaSource,
 )
 from app.services.telegram_files import UploadResult
@@ -49,30 +51,40 @@ class FakeSubscriptions:
 
 
 class FakeTelegramFiles:
-    async def send(self, bot, **kwargs):
-        return UploadResult(
-            message=SimpleNamespace(
-                video=SimpleNamespace(
-                    file_id="telegram-file-id",
-                    file_unique_id="telegram-unique-id",
+    async def send_artifacts(self, bot, **kwargs):
+        artifact = kwargs["package"].artifacts[0]
+        return (
+            UploadResult(
+                part_key=artifact.part_key,
+                media_kind=artifact.media_kind,
+                message=SimpleNamespace(
+                    video=SimpleNamespace(
+                        file_id="telegram-file-id",
+                        file_unique_id="telegram-unique-id",
+                    ),
+                    document=None,
                 ),
-                document=None,
+                sent_as_document=False,
             ),
-            sent_as_document=False,
         )
 
 
 class CachingTelegramFiles:
-    async def send(self, bot, **kwargs):
-        return UploadResult(
-            message=SimpleNamespace(
-                video=SimpleNamespace(
-                    file_id="telegram-file-id",
-                    file_unique_id="telegram-unique-id",
+    async def send_artifacts(self, bot, **kwargs):
+        artifact = kwargs["package"].artifacts[0]
+        return (
+            UploadResult(
+                part_key=artifact.part_key,
+                media_kind=artifact.media_kind,
+                message=SimpleNamespace(
+                    video=SimpleNamespace(
+                        file_id="telegram-file-id",
+                        file_unique_id="telegram-unique-id",
+                    ),
+                    document=None,
                 ),
-                document=None,
+                sent_as_document=False,
             ),
-            sent_as_document=False,
         )
 
 
@@ -104,7 +116,7 @@ class UnrelatedBadRequestCachedDeliveryTelegramFiles:
 
 
 class FailingTelegramFiles:
-    async def send(self, bot, **kwargs):
+    async def send_artifacts(self, bot, **kwargs):
         raise TelegramNetworkError(
             method=SendMessage(chat_id=1, text="upload"),
             message="network error",
@@ -112,7 +124,19 @@ class FailingTelegramFiles:
 
 
 class SuccessfulDownloader:
-    async def download(self, request, job_dir: Path, progress, on_fallback):
+    async def download(self, request, job_dir: Path, progress, on_fallback, on_prepared):
+        await on_prepared(
+            PreparedMedia(
+                request=request,
+                parts=(
+                    MediaPart(
+                        key=request.option_key,
+                        media_kind=request.policy.media_kind,
+                        position=0,
+                    ),
+                ),
+            )
+        )
         path = job_dir / "media.mp4"
         path.write_bytes(b"video")
         await progress("downloading", 50)
@@ -122,6 +146,7 @@ class SuccessfulDownloader:
                     MediaArtifact(
                         path=path,
                         media_kind=MediaKind.VIDEO,
+                        part_key=request.option_key,
                         width=10,
                         height=360,
                         duration=1,
@@ -133,32 +158,51 @@ class SuccessfulDownloader:
 
 
 class OversizedDownloader:
-    async def download(self, request, job_dir: Path, progress, on_fallback):
+    async def download(self, request, job_dir: Path, progress, on_fallback, on_prepared):
+        await on_prepared(
+            PreparedMedia(
+                request=request,
+                parts=(
+                    MediaPart(
+                        key=request.option_key,
+                        media_kind=request.policy.media_kind,
+                        position=0,
+                    ),
+                ),
+            )
+        )
         path = job_dir / "media.mp4"
         path.write_bytes(b"x" * 1_001)
         return BackendResult(
             package=MediaPackage(
-                artifacts=(MediaArtifact(path=path, media_kind=MediaKind.VIDEO, height=720),)
+                artifacts=(
+                    MediaArtifact(
+                        path=path,
+                        media_kind=MediaKind.VIDEO,
+                        part_key=request.option_key,
+                        height=720,
+                    ),
+                )
             ),
             backend=DownloadBackend.YTDLP,
         )
 
 
 class FailingDownloader:
-    async def download(self, **kwargs):
+    async def download(self, *args, **kwargs):
         raise BackendError("failure", kind=BackendErrorKind.RETRYABLE)
 
 
 class TimeoutDownloader:
-    async def download(self, **kwargs):
+    async def download(self, *args, **kwargs):
         await asyncio.sleep(1)
         raise AssertionError
 
 
 class FallbackDownloader(SuccessfulDownloader):
-    async def download(self, request, job_dir: Path, progress, on_fallback):
+    async def download(self, request, job_dir: Path, progress, on_fallback, on_prepared):
         await on_fallback(DownloadBackend.COBALT, DownloadBackend.YTDLP)
-        return await super().download(request, job_dir, progress, on_fallback)
+        return await super().download(request, job_dir, progress, on_fallback, on_prepared)
 
 
 async def make_database(tmp_path: Path) -> tuple[Database, int, int]:

@@ -53,6 +53,20 @@ class UnsupportedMediaPackageError(RuntimeError):
     pass
 
 
+class InvalidCachedPartError(RuntimeError):
+    def __init__(self, part_key: str) -> None:
+        super().__init__(part_key)
+        self.part_key = part_key
+
+
+def _invalid_file_id(error: TelegramBadRequest) -> bool:
+    text = str(error).casefold()
+    return any(
+        marker in text
+        for marker in ("wrong file identifier", "invalid file id", "file reference expired")
+    )
+
+
 def _local_uri(media: MediaArtifact) -> str:
     return f"file://{quote(media.path.as_posix(), safe='/')}"
 
@@ -70,19 +84,24 @@ class TelegramFileService:
         media_kind: MediaKind = MediaKind.VIDEO,
     ) -> UploadResult:
         kwargs = {"caption": caption, "parse_mode": ParseMode.HTML}
-        if sent_as_document:
-            message = await bot.send_document(chat_id, document=file_id, **kwargs)
-        elif media_kind is MediaKind.VIDEO:
-            message = await bot.send_video(
-                chat_id,
-                video=file_id,
-                supports_streaming=True,
-                **kwargs,
-            )
-        elif media_kind is MediaKind.AUDIO:
-            message = await bot.send_audio(chat_id, audio=file_id, **kwargs)
-        else:
-            message = await bot.send_photo(chat_id, photo=file_id, **kwargs)
+        try:
+            if sent_as_document:
+                message = await bot.send_document(chat_id, document=file_id, **kwargs)
+            elif media_kind is MediaKind.VIDEO:
+                message = await bot.send_video(
+                    chat_id,
+                    video=file_id,
+                    supports_streaming=True,
+                    **kwargs,
+                )
+            elif media_kind is MediaKind.AUDIO:
+                message = await bot.send_audio(chat_id, audio=file_id, **kwargs)
+            else:
+                message = await bot.send_photo(chat_id, photo=file_id, **kwargs)
+        except TelegramBadRequest as error:
+            if _invalid_file_id(error):
+                raise InvalidCachedPartError(part_key) from error
+            raise
         return UploadResult(
             part_key=part_key,
             media_kind=media_kind,
@@ -151,6 +170,15 @@ class TelegramFileService:
     ) -> tuple[UploadResult, ...]:
         results: list[UploadResult] = []
         caption_available = bool(caption)
+        for photo in photos:
+            if not photo.cached:
+                continue
+            try:
+                await bot.get_file(photo.media)
+            except TelegramBadRequest as error:
+                if _invalid_file_id(error):
+                    raise InvalidCachedPartError(photo.part_key) from error
+                raise
         for start in range(0, len(photos), 10):
             batch = photos[start : start + 10]
             if len(batch) == 1:
