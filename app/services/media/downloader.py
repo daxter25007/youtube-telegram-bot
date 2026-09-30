@@ -85,12 +85,13 @@ class MediaDownloader:
         policy: DownloadPolicy,
         job_dir: Path,
         progress: ProgressCallback,
+        part_key: str = "media",
     ) -> MediaPackage:
         resolved_job_dir = await asyncio.to_thread(job_dir.resolve)
         command = build_download_command(
             url=url,
             policy=policy,
-            output_template=str(job_dir / "media.%(ext)s"),
+            output_template=str(job_dir / f"{part_key}.%(ext)s"),
             cookies_file=self.cookies_file,
         )
         process = await asyncio.create_subprocess_exec(
@@ -127,7 +128,7 @@ class MediaDownloader:
         if return_code != 0:
             raise DownloadError("\n".join(tail)[-2_000:])
         if final_path is None:
-            final_path = await asyncio.to_thread(self._find_final_file, job_dir)
+            final_path = await asyncio.to_thread(self._find_final_file, job_dir, part_key)
         if final_path is None or not final_path.is_file():
             raise DownloadError("yt-dlp завершился без файла внутри job-каталога")
         resolved_final_path = await asyncio.to_thread(final_path.resolve)
@@ -137,7 +138,7 @@ class MediaDownloader:
         artifact = MediaArtifact(
             path=resolved_final_path,
             media_kind=policy.media_kind,
-            part_key=policy.media_kind.value,
+            part_key=part_key,
             width=probe.get("width"),
             height=probe.get("height"),
             duration=probe.get("duration"),
@@ -152,10 +153,10 @@ class MediaDownloader:
         return MediaPackage(artifacts=(artifact,))
 
     @staticmethod
-    def _find_final_file(job_dir: Path) -> Path | None:
+    def _find_final_file(job_dir: Path, part_key: str = "media") -> Path | None:
         candidates = [
             item
-            for item in job_dir.glob("media.*")
+            for item in job_dir.glob(f"{part_key}.*")
             if item.is_file() and not item.name.endswith((".part", ".ytdl"))
         ]
         return max(candidates, key=lambda item: item.stat().st_mtime, default=None)

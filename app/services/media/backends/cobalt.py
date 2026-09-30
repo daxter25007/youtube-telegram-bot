@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ipaddress
+import re
 import socket
 from collections.abc import Mapping
 from pathlib import Path
@@ -13,7 +14,7 @@ from aiohttp import ClientError, ClientSession, ClientTimeout, TCPConnector
 from aiohttp.abc import AbstractResolver
 
 from app.services.cobalt.client import CobaltClient, CobaltClientError, CobaltErrorKind
-from app.services.cobalt.models import CobaltResponseKind
+from app.services.cobalt.models import CobaltMode, CobaltPreparedItem, CobaltResponseKind
 from app.services.cobalt.security import (
     SafeRemoteUrlValidator,
     UnsafeRemoteUrlError,
@@ -24,13 +25,16 @@ from app.services.media.backends.base import (
     BackendErrorKind,
     DownloadBackend,
     MediaDownloadRequest,
+    MediaPartFailure,
+    PreparedMedia,
 )
 from app.services.media.downloader import ProgressCallback
-from app.services.media.models import MediaArtifact, MediaKind, MediaPackage
+from app.services.media.models import MediaArtifact, MediaKind, MediaPackage, MediaPart
 from app.services.media.probe import probe_media
 
 CHUNK_SIZE = 1024 * 1024
 MAX_REDIRECTS = 5
+SAFE_SUFFIX_RE = re.compile(r"^\.[a-z0-9]{1,8}$")
 
 
 class StreamContent(Protocol):
@@ -66,11 +70,9 @@ class _PinnedResolver(AbstractResolver):
                 "hostname": host,
                 "host": address,
                 "port": port,
-                "family": (
-                    socket.AF_INET6
-                    if ipaddress.ip_address(address).version == 6
-                    else socket.AF_INET
-                ),
+                "family": socket.AF_INET6
+                if ipaddress.ip_address(address).version == 6
+                else socket.AF_INET,
                 "proto": 0,
                 "flags": socket.AI_NUMERICHOST,
             }
@@ -108,9 +110,7 @@ class AiohttpResponseOpener:
                 timeout=self.timeout,
             )
             return _ManagedAiohttpResponse(response, None)
-        session = ClientSession(
-            connector=TCPConnector(resolver=_PinnedResolver(validated)),
-        )
+        session = ClientSession(connector=TCPConnector(resolver=_PinnedResolver(validated)))
         try:
             response = await session.get(
                 validated.url,
@@ -139,52 +139,123 @@ class CobaltBackend:
         self.opener = opener
         self.max_upload_bytes = max_upload_bytes
 
-    async def download(
+    async def prepare(self, request: MediaDownloadRequest) -> PreparedMedia:
+        try:
+            visual = await self.client.prepare(request.url, mode=CobaltMode.AUTO)
+            items = list(visual.items)
+            if not any(item.media_kind is MediaKind.AUDIO for item in items):
+                audio = await self.client.prepare(
+                    request.url,
+                    mode=CobaltMode.AUDIO,
+                    tiktok_full_audio=True,
+                )
+                items.extend(audio.items)
+        except CobaltClientError as exc:
+            kind = {
+                CobaltErrorKind.UNSUPPORTED: BackendErrorKind.UNSUPPORTED,
+                CobaltErrorKind.SECURITY: BackendErrorKind.SECURITY,
+            }.get(exc.kind, BackendErrorKind.RETRYABLE)
+            raise BackendError("Cobalt не подготовил публикацию", kind=kind) from exc
+        normalized = tuple(
+            CobaltPreparedItem(
+                part_key=item.part_key,
+                media_kind=item.media_kind,
+                position=position,
+                url=item.url,
+                filename=item.filename,
+                response_kind=item.response_kind,
+                internal_origin=item.internal_origin,
+            )
+            for position, item in enumerate(items)
+        )
+        parts = tuple(
+            MediaPart(
+                key=item.part_key,
+                media_kind=item.media_kind,
+                position=item.position,
+                filename=item.filename,
+            )
+            for item in normalized
+        )
+        return PreparedMedia(request=request, parts=parts, backend_payload=normalized)
+
+    async def download_prepared(
         self,
-        request: MediaDownloadRequest,
+        prepared: PreparedMedia,
+        include_keys: frozenset[str],
         job_dir: Path,
         progress: ProgressCallback,
     ) -> MediaPackage:
-        part_path = job_dir / "media.part"
-        final_path = job_dir / "media.mp4"
-        completed = False
+        payload = prepared.backend_payload
+        if not isinstance(payload, tuple) or not all(
+            isinstance(item, CobaltPreparedItem) for item in payload
+        ):
+            raise BackendError("Некорректная подготовка Cobalt", kind=BackendErrorKind.RETRYABLE)
+        artifacts: list[MediaArtifact] = []
+        failures: list[MediaPartFailure] = []
+        for item in payload:
+            if item.part_key not in include_keys:
+                continue
+            try:
+                artifacts.append(await self._download_item(item, job_dir, progress))
+            except asyncio.CancelledError:
+                raise
+            except BackendError as exc:
+                if exc.kind in {BackendErrorKind.SECURITY, BackendErrorKind.FILESYSTEM}:
+                    raise
+                failures.append(
+                    MediaPartFailure(
+                        part_key=item.part_key,
+                        media_kind=item.media_kind,
+                        error_kind=exc.kind,
+                    )
+                )
+        if (
+            not artifacts
+            and failures
+            and all(failure.error_kind is BackendErrorKind.RETRYABLE for failure in failures)
+        ):
+            raise BackendError("Cobalt не скачал ни одной части", kind=BackendErrorKind.RETRYABLE)
+        return MediaPackage(artifacts=tuple(artifacts), failures=tuple(failures))
+
+    async def _download_item(
+        self,
+        item: CobaltPreparedItem,
+        job_dir: Path,
+        progress: ProgressCallback,
+    ) -> MediaArtifact:
+        suffix = Path(item.filename).suffix.lower()
+        if not SAFE_SUFFIX_RE.fullmatch(suffix):
+            suffix = {
+                MediaKind.VIDEO: ".mp4",
+                MediaKind.PHOTO: ".jpg",
+                MediaKind.AUDIO: ".bin",
+            }[item.media_kind]
+        part_path = job_dir / f"{item.part_key}.part"
+        final_path = job_dir / f"{item.part_key}{suffix}"
         response: StreamResponse | None = None
         file_handle: Any | None = None
+        completed = False
         try:
             try:
-                prepared = await self.client.prepare(request.url)
-                allowed_origin = (
-                    self.client.base_url if prepared.kind is CobaltResponseKind.TUNNEL else None
-                )
                 validated = await self.validator.validate(
-                    prepared.url,
-                    allowed_internal_origin=allowed_origin,
+                    item.url,
+                    allowed_internal_origin=item.internal_origin,
                 )
-            except CobaltClientError as exc:
-                kind = (
-                    BackendErrorKind.UNSUPPORTED
-                    if exc.kind is CobaltErrorKind.UNSUPPORTED
-                    else BackendErrorKind.RETRYABLE
-                )
-                raise BackendError("Cobalt не подготовил видео", kind=kind) from exc
             except UnsafeRemoteUrlError as exc:
                 raise BackendError(
-                    "Cobalt вернул небезопасный URL",
-                    kind=BackendErrorKind.RETRYABLE,
+                    "Cobalt вернул небезопасный URL", kind=BackendErrorKind.SECURITY
                 ) from exc
             except OSError as exc:
                 raise BackendError(
-                    "Не удалось проверить media URL Cobalt",
-                    kind=BackendErrorKind.RETRYABLE,
+                    "Не удалось проверить media URL Cobalt", kind=BackendErrorKind.RETRYABLE
                 ) from exc
-
             for redirect_count in range(MAX_REDIRECTS + 1):
                 try:
                     response = await self.opener.open(validated)
                 except (ClientError, OSError, TimeoutError) as exc:
                     raise BackendError(
-                        "Cobalt media endpoint недоступен",
-                        kind=BackendErrorKind.RETRYABLE,
+                        "Cobalt media endpoint недоступен", kind=BackendErrorKind.RETRYABLE
                     ) from exc
                 if response.status not in {301, 302, 303, 307, 308}:
                     break
@@ -193,48 +264,36 @@ class CobaltBackend:
                 response = None
                 if not location or redirect_count == MAX_REDIRECTS:
                     raise BackendError(
-                        "Cobalt redirect не содержит безопасной цели",
-                        kind=BackendErrorKind.RETRYABLE,
+                        "Некорректный Cobalt redirect", kind=BackendErrorKind.RETRYABLE
                     )
-                redirect_url = urljoin(validated.url, location)
                 try:
                     validated = await self.validator.validate(
-                        redirect_url,
-                        allowed_internal_origin=allowed_origin,
+                        urljoin(validated.url, location),
+                        allowed_internal_origin=item.internal_origin,
                     )
                 except UnsafeRemoteUrlError as exc:
                     raise BackendError(
-                        "Cobalt redirect небезопасен",
-                        kind=BackendErrorKind.RETRYABLE,
+                        "Cobalt redirect небезопасен", kind=BackendErrorKind.SECURITY
                     ) from exc
                 except OSError as exc:
                     raise BackendError(
-                        "Не удалось проверить Cobalt redirect",
-                        kind=BackendErrorKind.RETRYABLE,
+                        "Не удалось проверить Cobalt redirect", kind=BackendErrorKind.RETRYABLE
                     ) from exc
             if response is None or response.status != 200:
                 raise BackendError(
-                    "Cobalt media stream недоступен",
-                    kind=BackendErrorKind.RETRYABLE,
+                    "Cobalt media stream недоступен", kind=BackendErrorKind.RETRYABLE
                 )
             content_type = response.headers.get("Content-Type", "").partition(";")[0].lower()
             if content_type.startswith("text/") or content_type == "application/json":
-                raise BackendError(
-                    "Cobalt media endpoint вернул не видео",
-                    kind=BackendErrorKind.RETRYABLE,
-                )
+                raise BackendError("Cobalt вернул не медиа", kind=BackendErrorKind.RETRYABLE)
             declared_size = self._content_length(response.headers)
             if declared_size is not None and declared_size > self.max_upload_bytes:
-                raise BackendError(
-                    "Cobalt media превышает лимит размера",
-                    kind=BackendErrorKind.TOO_LARGE,
-                )
+                raise BackendError("Cobalt media превышает лимит", kind=BackendErrorKind.TOO_LARGE)
             try:
                 file_handle = await asyncio.to_thread(part_path.open, "wb")
             except OSError as exc:
                 raise BackendError(
-                    "Не удалось создать временный файл",
-                    kind=BackendErrorKind.FILESYSTEM,
+                    "Не удалось создать временный файл", kind=BackendErrorKind.FILESYSTEM
                 ) from exc
             written = 0
             try:
@@ -242,20 +301,11 @@ class CobaltBackend:
                     written += len(chunk)
                     if written > self.max_upload_bytes:
                         raise BackendError(
-                            "Cobalt media превышает лимит размера",
-                            kind=BackendErrorKind.TOO_LARGE,
+                            "Cobalt media превышает лимит", kind=BackendErrorKind.TOO_LARGE
                         )
-                    try:
-                        await asyncio.to_thread(file_handle.write, chunk)
-                    except OSError as exc:
-                        raise BackendError(
-                            "Не удалось записать временный файл",
-                            kind=BackendErrorKind.FILESYSTEM,
-                        ) from exc
+                    await asyncio.to_thread(file_handle.write, chunk)
                     percent = min(100.0, written * 100 / declared_size) if declared_size else None
                     await progress("downloading", percent)
-            except asyncio.CancelledError:
-                raise
             except BackendError:
                 raise
             except (ClientError, OSError, TimeoutError) as exc:
@@ -264,31 +314,24 @@ class CobaltBackend:
                 ) from exc
             await asyncio.to_thread(file_handle.close)
             file_handle = None
-            try:
-                await asyncio.to_thread(part_path.replace, final_path)
-            except OSError as exc:
-                raise BackendError(
-                    "Не удалось завершить временный файл",
-                    kind=BackendErrorKind.FILESYSTEM,
-                ) from exc
-            probe = await probe_media(final_path)
-            if probe.width is None or probe.height is None:
-                raise BackendError(
-                    "Cobalt payload не содержит видеопоток",
-                    kind=BackendErrorKind.RETRYABLE,
-                )
+            await asyncio.to_thread(part_path.replace, final_path)
+            width = height = duration = None
+            if item.media_kind is MediaKind.VIDEO:
+                probe = await probe_media(final_path)
+                if probe.width is None or probe.height is None:
+                    raise BackendError(
+                        "Cobalt payload не содержит видеопоток", kind=BackendErrorKind.RETRYABLE
+                    )
+                width, height, duration = probe.width, probe.height, probe.duration
             completed = True
-            return MediaPackage(
-                artifacts=(
-                    MediaArtifact(
-                        path=final_path,
-                        media_kind=MediaKind.VIDEO,
-                        width=probe.width,
-                        height=probe.height,
-                        duration=probe.duration,
-                        mime_type="video/mp4",
-                    ),
-                )
+            return MediaArtifact(
+                path=final_path,
+                media_kind=item.media_kind,
+                part_key=item.part_key,
+                width=width,
+                height=height,
+                duration=duration,
+                mime_type=content_type or None,
             )
         finally:
             if file_handle is not None:
@@ -309,12 +352,8 @@ class CobaltBackend:
             value = int(raw)
         except ValueError as exc:
             raise BackendError(
-                "Cobalt вернул некорректный Content-Length",
-                kind=BackendErrorKind.RETRYABLE,
+                "Некорректный Content-Length", kind=BackendErrorKind.RETRYABLE
             ) from exc
         if value < 0:
-            raise BackendError(
-                "Cobalt вернул отрицательный Content-Length",
-                kind=BackendErrorKind.RETRYABLE,
-            )
+            raise BackendError("Отрицательный Content-Length", kind=BackendErrorKind.RETRYABLE)
         return value

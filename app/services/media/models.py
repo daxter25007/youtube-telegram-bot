@@ -123,3 +123,4 @@ class MediaArtifact:
 @dataclass(frozen=True, slots=True)
 class MediaPackage:
     artifacts: tuple[MediaArtifact, ...]
+    failures: tuple[object, ...] = ()

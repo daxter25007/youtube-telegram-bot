@@ -7,9 +7,10 @@ from app.services.media.backends.base import (
     BackendErrorKind,
     DownloadBackend,
     MediaDownloadRequest,
+    PreparedMedia,
 )
 from app.services.media.downloader import DownloadError, MediaDownloader, ProgressCallback
-from app.services.media.models import MediaPackage
+from app.services.media.models import DownloadPolicy, MediaKind, MediaPackage, MediaPart
 
 
 class YtDlpBackend:
@@ -18,21 +19,57 @@ class YtDlpBackend:
     def __init__(self, downloader: MediaDownloader) -> None:
         self.downloader = downloader
 
-    async def download(
+    async def prepare(self, request: MediaDownloadRequest) -> PreparedMedia:
+        if request.option_key == "tiktok_bundle":
+            parts = (
+                MediaPart(key="video", media_kind=MediaKind.VIDEO, position=0),
+                MediaPart(key="audio", media_kind=MediaKind.AUDIO, position=1),
+            )
+        else:
+            parts = (
+                MediaPart(
+                    key=request.option_key,
+                    media_kind=request.policy.media_kind,
+                    position=0,
+                ),
+            )
+        return PreparedMedia(request=request, parts=parts)
+
+    async def download_prepared(
         self,
-        request: MediaDownloadRequest,
+        prepared: PreparedMedia,
+        include_keys: frozenset[str],
         job_dir: Path,
         progress: ProgressCallback,
     ) -> MediaPackage:
-        try:
-            return await self.downloader.download(
-                url=request.url,
-                policy=request.policy,
-                job_dir=job_dir,
-                progress=progress,
-            )
-        except DownloadError as exc:
-            raise BackendError(
-                "yt-dlp backend не получил видео",
-                kind=BackendErrorKind.RETRYABLE,
-            ) from exc
+        artifacts = []
+        for part in prepared.parts:
+            if part.key not in include_keys:
+                continue
+            policy = prepared.request.policy
+            if prepared.request.option_key == "tiktok_bundle":
+                policy = (
+                    DownloadPolicy(format_selector="best[ext=mp4]/best")
+                    if part.media_kind is MediaKind.VIDEO
+                    else DownloadPolicy(
+                        format_selector="bestaudio/best",
+                        media_kind=MediaKind.AUDIO,
+                        extract_audio=True,
+                        audio_format="best",
+                    )
+                )
+            try:
+                package = await self.downloader.download(
+                    url=prepared.request.url,
+                    policy=policy,
+                    job_dir=job_dir,
+                    progress=progress,
+                    part_key=part.key,
+                )
+            except DownloadError as exc:
+                raise BackendError(
+                    "yt-dlp backend не получил медиа",
+                    kind=BackendErrorKind.RETRYABLE,
+                ) from exc
+            artifacts.extend(package.artifacts)
+        return MediaPackage(artifacts=tuple(artifacts))

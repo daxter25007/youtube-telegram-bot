@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import Protocol
 
 from app.services.media.downloader import ProgressCallback
-from app.services.media.models import DownloadPolicy, MediaPackage, MediaSource
+from app.services.media.models import (
+    DownloadPolicy,
+    MediaKind,
+    MediaPackage,
+    MediaPart,
+    MediaSource,
+)
 
 
 class DownloadBackend(StrEnum):
@@ -38,6 +44,20 @@ class MediaDownloadRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedMedia:
+    request: MediaDownloadRequest
+    parts: tuple[MediaPart, ...]
+    backend_payload: object | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MediaPartFailure:
+    part_key: str
+    media_kind: MediaKind
+    error_kind: BackendErrorKind
+
+
+@dataclass(frozen=True, slots=True)
 class BackendResult:
     package: MediaPackage
     backend: DownloadBackend
@@ -46,9 +66,12 @@ class BackendResult:
 class MediaBackend(Protocol):
     name: DownloadBackend
 
-    async def download(
+    async def prepare(self, request: MediaDownloadRequest) -> PreparedMedia: ...
+
+    async def download_prepared(
         self,
-        request: MediaDownloadRequest,
+        prepared: PreparedMedia,
+        include_keys: frozenset[str],
         job_dir: Path,
         progress: ProgressCallback,
     ) -> MediaPackage: ...

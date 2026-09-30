@@ -12,11 +12,13 @@ from app.services.media.backends.base import (
     DownloadBackend,
     MediaBackend,
     MediaDownloadRequest,
+    PreparedMedia,
 )
 from app.services.media.downloader import ProgressCallback
 from app.services.media.models import MediaSource
 
 FallbackCallback = Callable[[DownloadBackend, DownloadBackend], Awaitable[None]]
+PreparedCallback = Callable[[PreparedMedia], Awaitable[frozenset[str]]]
 
 
 class MediaBackendRouter:
@@ -29,6 +31,7 @@ class MediaBackendRouter:
         job_dir: Path,
         progress: ProgressCallback,
         on_fallback: FallbackCallback,
+        on_prepared: PreparedCallback | None = None,
     ) -> BackendResult:
         backends = self._routes.get(request.source, ())
         if not backends:
@@ -38,7 +41,18 @@ class MediaBackendRouter:
             )
         for index, backend in enumerate(backends):
             try:
-                package = await backend.download(request, job_dir, progress)
+                prepared = await backend.prepare(request)
+                include_keys = (
+                    await on_prepared(prepared)
+                    if on_prepared is not None
+                    else frozenset(part.key for part in prepared.parts)
+                )
+                package = await backend.download_prepared(
+                    prepared,
+                    include_keys,
+                    job_dir,
+                    progress,
+                )
                 return BackendResult(package=package, backend=backend.name)
             except BackendError as exc:
                 has_fallback = index + 1 < len(backends)
