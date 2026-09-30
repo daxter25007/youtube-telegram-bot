@@ -92,7 +92,7 @@ async def _enqueue_option(
     download = await DownloadRepository(session).create(
         user_id=request.user_id,
         source=request.source,
-        media_kind=request.media_kind,
+        media_kind=option.media_kind,
         source_media_id=request.source_media_id,
         source_url=request.source_url,
         video_title=title,
@@ -110,7 +110,7 @@ async def _enqueue_option(
             download_id=download.id,
             source=request.source,
             source_media_id=request.source_media_id,
-            media_kind=request.media_kind,
+            media_kind=option.media_kind,
             option_key=option.key,
             title=title,
             source_url=request.source_url,
@@ -142,7 +142,7 @@ async def _enqueue_option(
             source_url=request.source_url,
             source=request.source,
             source_media_id=request.source_media_id,
-            media_kind=request.media_kind,
+            media_kind=option.media_kind,
             option_key=option.key,
             policy=policy,
             title=title,
@@ -284,11 +284,15 @@ async def receive_url(
             bot=bot,
         )
         return
-    cached_option_keys = await MediaCacheRepository(session).cached_option_keys(
-        source=metadata.source,
-        source_media_id=metadata.media_id,
-        media_kind=metadata.media_kind,
-    )
+    cached_option_keys: set[str] = set()
+    for media_kind in {option.media_kind for option in metadata.options}:
+        cached_option_keys.update(
+            await MediaCacheRepository(session).cached_option_keys(
+                source=metadata.source,
+                source_media_id=metadata.media_id,
+                media_kind=media_kind,
+            )
+        )
     await status_message.edit_text(
         f"🎬 {metadata.title}\n\n⏱ {format_duration(metadata.duration)}\n\nВыберите качество:",
         reply_markup=quality_keyboard(

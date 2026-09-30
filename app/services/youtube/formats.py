@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-SUPPORTED_QUALITIES = (360, 480, 720, 1080, 1440, 2160)
+SUPPORTED_QUALITIES = (144, 240, 360, 480, 720, 1080, 1440, 2160)
 
 
 @dataclass(frozen=True, slots=True)

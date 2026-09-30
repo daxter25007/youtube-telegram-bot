@@ -69,7 +69,7 @@ class YouTubeAdapter:
             ) from exc
         if not qualities:
             raise MetadataError("Нет доступных форматов видео", kind=MetadataErrorKind.UNAVAILABLE)
-        options = tuple(
+        video_options = tuple(
             DownloadOption(
                 key=f"video_{quality.height}",
                 label=f"{quality.height}p",
@@ -81,6 +81,14 @@ class YouTubeAdapter:
                 container=quality.container,
             )
             for quality in qualities
+        )
+        options = video_options + (
+            DownloadOption(
+                key="audio_m4a",
+                label="🎵 Только аудио",
+                media_kind=MediaKind.AUDIO,
+                container="m4a",
+            ),
         )
         return MediaMetadata(
             source=self.source,
@@ -94,6 +102,13 @@ class YouTubeAdapter:
         )
 
     def download_policy(self, option_key: str) -> DownloadPolicy:
+        if option_key == "audio_m4a":
+            return DownloadPolicy(
+                format_selector="bestaudio[ext=m4a]/bestaudio",
+                media_kind=MediaKind.AUDIO,
+                extract_audio=True,
+                audio_format="m4a",
+            )
         prefix = "video_"
         if not option_key.startswith(prefix):
             raise ValueError("Неизвестный вариант YouTube")

@@ -44,10 +44,6 @@ def build_download_command(
         "postprocess:__POSTPROCESS__%(progress.status)s",
         "--print",
         "after_move:__FILE__%(filepath)s",
-        "--merge-output-format",
-        policy.merge_output_format,
-        "--remux-video",
-        policy.remux_video,
         "--js-runtimes",
         "node",
         "--socket-timeout",
@@ -61,6 +57,17 @@ def build_download_command(
         "--output",
         output_template,
     ]
+    if policy.extract_audio:
+        command.extend(["--extract-audio", "--audio-format", policy.audio_format or "best"])
+    else:
+        command.extend(
+            [
+                "--merge-output-format",
+                policy.merge_output_format,
+                "--remux-video",
+                policy.remux_video,
+            ]
+        )
     if cookies_file:
         command.extend(["--cookies", cookies_file])
     command.extend(["--", url])
@@ -129,11 +136,18 @@ class MediaDownloader:
         probe = await self._probe(resolved_final_path)
         artifact = MediaArtifact(
             path=resolved_final_path,
-            media_kind=MediaKind.VIDEO,
+            media_kind=policy.media_kind,
+            part_key=policy.media_kind.value,
             width=probe.get("width"),
             height=probe.get("height"),
             duration=probe.get("duration"),
-            mime_type="video/mp4" if resolved_final_path.suffix.lower() == ".mp4" else None,
+            mime_type=(
+                "video/mp4"
+                if resolved_final_path.suffix.lower() == ".mp4"
+                else "audio/mp4"
+                if resolved_final_path.suffix.lower() == ".m4a"
+                else None
+            ),
         )
         return MediaPackage(artifacts=(artifact,))
 

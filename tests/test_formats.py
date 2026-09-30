@@ -53,3 +53,41 @@ def test_format_selector_is_characteristic_based() -> None:
     assert "format_id" not in selector
     with pytest.raises(ValueError):
         build_format_selector(999)
+
+
+def test_quality_selection_includes_144p_and_240p_when_available() -> None:
+    formats = [
+        {
+            "format_id": "v144",
+            "height": 144,
+            "vcodec": "avc1.4d400c",
+            "acodec": "none",
+            "ext": "mp4",
+            "filesize": 100,
+        },
+        {
+            "format_id": "v240",
+            "height": 240,
+            "vcodec": "avc1.4d400d",
+            "acodec": "none",
+            "ext": "mp4",
+            "filesize": 200,
+        },
+        {
+            "format_id": "a1",
+            "height": None,
+            "vcodec": "none",
+            "acodec": "mp4a.40.2",
+            "ext": "m4a",
+            "filesize": 50,
+        },
+    ]
+
+    options = select_quality_options(formats, duration=10, max_upload_bytes=1_000)
+
+    assert [option.height for option in options] == [144, 240]
+
+
+@pytest.mark.parametrize("height", [144, 240])
+def test_format_selector_accepts_low_qualities(height: int) -> None:
+    assert f"height<={height}" in build_format_selector(height)

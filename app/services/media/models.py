@@ -74,6 +74,9 @@ class MediaMetadata:
 @dataclass(frozen=True, slots=True)
 class DownloadPolicy:
     format_selector: str
+    media_kind: MediaKind = MediaKind.VIDEO
+    extract_audio: bool = False
+    audio_format: str | None = None
     merge_output_format: str = "mp4"
     remux_video: str = "mp4"
 
@@ -82,6 +85,7 @@ class DownloadPolicy:
 class MediaArtifact:
     path: Path
     media_kind: MediaKind
+    part_key: str = "media"
     width: int | None = None
     height: int | None = None
     duration: int | None = None

@@ -27,6 +27,25 @@ def test_download_command_places_url_after_option_separator(tmp_path: Path) -> N
     assert "shell=True" not in command
 
 
+def test_audio_download_command_extracts_m4a_without_video_remux(tmp_path: Path) -> None:
+    command = build_download_command(
+        url="https://youtu.be/dQw4w9WgXcQ",
+        policy=DownloadPolicy(
+            format_selector="bestaudio[ext=m4a]/bestaudio",
+            media_kind=MediaKind.AUDIO,
+            extract_audio=True,
+            audio_format="m4a",
+        ),
+        output_template=str(tmp_path / "media.%(ext)s"),
+        cookies_file=None,
+    )
+
+    assert command[command.index("--audio-format") + 1] == "m4a"
+    assert "--extract-audio" in command
+    assert "--merge-output-format" not in command
+    assert "--remux-video" not in command
+
+
 def test_legacy_youtube_downloader_name_uses_shared_implementation() -> None:
     assert YouTubeDownloader is MediaDownloader
 

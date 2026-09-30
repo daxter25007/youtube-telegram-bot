@@ -48,8 +48,18 @@ def test_youtube_metadata_keeps_available_size_compatible_qualities() -> None:
 
     assert metadata.source is MediaSource.YOUTUBE
     assert metadata.media_kind is MediaKind.VIDEO
-    assert [option.key for option in metadata.options] == ["video_720"]
+    assert [option.key for option in metadata.options] == ["video_720", "audio_m4a"]
     assert metadata.options[0].estimated_size == 700
+    assert metadata.options[1].label == "🎵 Только аудио"
+    assert metadata.options[1].media_kind is MediaKind.AUDIO
+
+
+def test_youtube_audio_option_builds_m4a_policy() -> None:
+    policy = YouTubeAdapter().download_policy("audio_m4a")
+
+    assert policy.media_kind is MediaKind.AUDIO
+    assert policy.extract_audio is True
+    assert policy.audio_format == "m4a"
 
 
 def test_legacy_youtube_metadata_name_uses_shared_implementation() -> None:

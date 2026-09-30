@@ -126,7 +126,11 @@ class FakeCachedDownloadManager:
 
 
 class FakeCacheMissDownloadManager:
+    def __init__(self) -> None:
+        self.cache_kwargs: dict[str, object] = {}
+
     async def try_cached(self, **kwargs):
+        self.cache_kwargs = kwargs
         return False
 
 
@@ -149,26 +153,93 @@ def settings() -> SimpleNamespace:
 def test_quality_keyboard_marks_cached_and_waiting_options() -> None:
     options = [
         DownloadOption(
+            key="video_144",
+            label="144p",
+            media_kind=MediaKind.VIDEO,
+            height=144,
+        ),
+        DownloadOption(
+            key="video_240",
+            label="240p",
+            media_kind=MediaKind.VIDEO,
+            height=240,
+        ),
+        DownloadOption(
+            key="video_360",
+            label="360p",
+            media_kind=MediaKind.VIDEO,
+            height=360,
+        ),
+        DownloadOption(
+            key="video_480",
+            label="480p",
+            media_kind=MediaKind.VIDEO,
+            height=480,
+        ),
+        DownloadOption(
             key="video_720",
             label="720p",
             media_kind=MediaKind.VIDEO,
             height=720,
         ),
         DownloadOption(
-            key="video_1080",
-            label="1080p",
-            media_kind=MediaKind.VIDEO,
-            height=1080,
+            key="audio_m4a",
+            label="🎵 Только аудио",
+            media_kind=MediaKind.AUDIO,
         ),
     ]
 
     keyboard = quality_keyboard(
         "request-id",
         options,
-        cached_option_keys={"video_720"},
+        cached_option_keys={"video_144", "video_480", "audio_m4a"},
     )
 
-    assert [row[0].text for row in keyboard.inline_keyboard] == ["⚡ 720p", "⏳ 1080p"]
+    assert [[button.text for button in row] for row in keyboard.inline_keyboard] == [
+        ["⚡ 144p", "⏳ 240p"],
+        ["⏳ 360p", "⚡ 480p"],
+        ["⏳ 720p"],
+        ["⚡ 🎵 Только аудио"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_audio_selection_uses_option_media_kind(session_and_user) -> None:
+    session, user = session_and_user
+    option = DownloadOption(
+        key="audio_m4a",
+        label="🎵 Только аудио",
+        media_kind=MediaKind.AUDIO,
+    )
+    request = await DownloadRequestRepository(session).create(
+        user_id=user.id,
+        telegram_user_id=123,
+        source=MediaSource.YOUTUBE,
+        media_kind=MediaKind.VIDEO,
+        source_url="https://youtu.be/dQw4w9WgXcQ",
+        source_media_id="dQw4w9WgXcQ",
+        metadata={"title": "YouTube example", "options": [option.as_dict()]},
+    )
+    await session.commit()
+    manager = FakeCacheMissDownloadManager()
+
+    await _enqueue_option(
+        progress_message=FakeStatusMessage(),  # type: ignore[arg-type]
+        telegram_user_id=123,
+        request=request,
+        option=option,
+        session=session,
+        settings=settings(),  # type: ignore[arg-type]
+        media_registry=MediaRegistry.default(),
+        download_queue=FakeQueue(),  # type: ignore[arg-type]
+        download_manager=manager,  # type: ignore[arg-type]
+        bot=object(),  # type: ignore[arg-type]
+    )
+
+    download = await session.scalar(select(Download))
+    assert download is not None
+    assert download.media_kind is MediaKind.AUDIO
+    assert manager.cache_kwargs["media_kind"] is MediaKind.AUDIO
 
 
 @pytest.mark.asyncio
