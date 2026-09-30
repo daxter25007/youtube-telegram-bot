@@ -3,7 +3,9 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.cobalt.client import CobaltClient, CobaltClientError, CobaltErrorKind
-from app.services.cobalt.models import CobaltResponseKind
+from app.services.cobalt.models import CobaltMode, CobaltResponseKind
+from app.services.cobalt.security import UnsafeRemoteUrlError
+from app.services.media.models import MediaKind
 
 
 class FakeResponse:
@@ -22,31 +24,34 @@ class FakeResponse:
 
 
 class FakeSession:
-    def __init__(self, response: FakeResponse) -> None:
-        self.response = response
+    def __init__(self, *responses: FakeResponse) -> None:
+        self.responses = list(responses)
         self.posts: list[tuple[str, dict[str, object]]] = []
 
     async def post(self, url: str, **kwargs):
         self.posts.append((url, kwargs))
-        return self.response
+        return self.responses.pop(0)
 
 
 class FakeValidator:
-    def __init__(self, error: Exception | None = None) -> None:
+    def __init__(self, rejected: set[str] | None = None, error: Exception | None = None) -> None:
         self.calls: list[tuple[str, str | None]] = []
+        self.rejected = rejected or set()
         self.error = error
 
     async def validate(self, url: str, *, allowed_internal_origin: str | None = None):
         self.calls.append((url, allowed_internal_origin))
+        if url in self.rejected:
+            raise UnsafeRemoteUrlError("unsafe")
         if self.error is not None:
             raise self.error
         return SimpleNamespace(url=url)
 
 
-def client_for(payload: object, *, status: int = 200):
+def client_for(payload: object, *, status: int = 200, validator=None):
     response = FakeResponse(payload, status=status)
     session = FakeSession(response)
-    validator = FakeValidator()
+    validator = validator or FakeValidator()
     client = CobaltClient(
         base_url="http://cobalt:9000",
         request_timeout_seconds=30,
@@ -63,35 +68,94 @@ async def test_client_parses_single_video_response(status: str) -> None:
         {"status": status, "url": "http://cobalt:9000/tunnel?id=1", "filename": "video.mp4"}
     )
 
-    result = await client.prepare("https://www.tiktok.com/@creator/video/7461234567890123456")
+    result = await client.prepare(
+        "https://www.tiktok.com/@creator/video/7461234567890123456",
+        mode=CobaltMode.AUTO,
+    )
 
-    assert result.kind is CobaltResponseKind(status)
-    assert result.filename == "video.mp4"
+    assert len(result.items) == 1
+    item = result.items[0]
+    assert item.response_kind is CobaltResponseKind(status)
+    assert item.filename == "video.mp4"
+    assert item.part_key == "video"
+    assert item.media_kind is MediaKind.VIDEO
     body = session.posts[0][1]["json"]
+    assert body["downloadMode"] == "auto"
     assert body["alwaysProxy"] is True
     assert body["allowH265"] is False
     expected_origin = "http://cobalt:9000" if status == "tunnel" else None
-    assert validator.calls == [(result.url, expected_origin)]
+    assert validator.calls == [(item.url, expected_origin)]
     assert response.released is True
 
 
 @pytest.mark.asyncio
-async def test_client_selects_video_from_picker() -> None:
+async def test_client_preserves_ordered_photos_and_picker_audio() -> None:
     client, _, validator, _ = client_for(
         {
             "status": "picker",
             "picker": [
-                {"type": "photo", "url": "https://cdn.example/photo.jpg"},
-                {"type": "video", "url": "https://cdn.example/video.mp4"},
+                {"type": "photo", "url": "https://cdn.example/1.jpg"},
+                {"type": "photo", "url": "https://cdn.example/2.webp"},
             ],
+            "audio": "https://cdn.example/sound.m4a",
+            "audioFilename": "sound.m4a",
         }
     )
 
-    result = await client.prepare("https://vm.tiktok.com/ABC123/")
+    result = await client.prepare("https://vm.tiktok.com/ABC123/", mode=CobaltMode.AUTO)
 
-    assert result.kind is CobaltResponseKind.PICKER
-    assert result.url == "https://cdn.example/video.mp4"
-    assert validator.calls == [(result.url, None)]
+    assert [(item.part_key, item.media_kind, item.position) for item in result.items] == [
+        ("photo_000", MediaKind.PHOTO, 0),
+        ("photo_001", MediaKind.PHOTO, 1),
+        ("audio", MediaKind.AUDIO, 2),
+    ]
+    assert result.items[2].filename == "sound.m4a"
+    assert validator.calls == [
+        ("https://cdn.example/1.jpg", None),
+        ("https://cdn.example/2.webp", None),
+        ("https://cdn.example/sound.m4a", None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_audio_mode_requests_best_full_tiktok_audio() -> None:
+    client, session, _, _ = client_for(
+        {"status": "redirect", "url": "https://cdn.example/sound.opus", "filename": "sound.opus"}
+    )
+
+    result = await client.prepare(
+        "https://vm.tiktok.com/ABC123/",
+        mode=CobaltMode.AUDIO,
+        tiktok_full_audio=True,
+    )
+
+    body = session.posts[0][1]["json"]
+    assert body["downloadMode"] == "audio"
+    assert body["audioFormat"] == "best"
+    assert body["tiktokFullAudio"] is True
+    assert result.items[0].part_key == "audio"
+    assert result.items[0].media_kind is MediaKind.AUDIO
+    assert result.items[0].filename == "sound.opus"
+
+
+@pytest.mark.asyncio
+async def test_client_rejects_unsafe_item_in_picker_before_download() -> None:
+    validator = FakeValidator({"http://127.0.0.1/private.jpg"})
+    client, _, _, _ = client_for(
+        {
+            "status": "picker",
+            "picker": [
+                {"type": "photo", "url": "https://cdn.example/1.jpg"},
+                {"type": "photo", "url": "http://127.0.0.1/private.jpg"},
+            ],
+        },
+        validator=validator,
+    )
+
+    with pytest.raises(CobaltClientError) as raised:
+        await client.prepare("https://vm.tiktok.com/ABC123/", mode=CobaltMode.AUTO)
+
+    assert raised.value.kind is CobaltErrorKind.SECURITY
 
 
 @pytest.mark.asyncio
@@ -99,7 +163,7 @@ async def test_client_selects_video_from_picker() -> None:
     ("payload", "kind"),
     [
         (
-            {"status": "picker", "picker": [{"type": "photo", "url": "https://x/y"}]},
+            {"status": "picker", "picker": [{"type": "unknown", "url": "https://x/y"}]},
             CobaltErrorKind.UNSUPPORTED,
         ),
         ({"status": "error", "error": {"code": "error.api.fetch"}}, CobaltErrorKind.RETRYABLE),
@@ -115,7 +179,7 @@ async def test_client_rejects_unsupported_or_invalid_responses(
     client, _, _, _ = client_for(payload)
 
     with pytest.raises(CobaltClientError) as raised:
-        await client.prepare("https://vm.tiktok.com/ABC123/")
+        await client.prepare("https://vm.tiktok.com/ABC123/", mode=CobaltMode.AUTO)
 
     assert raised.value.kind is kind
 
@@ -126,7 +190,7 @@ async def test_client_rejects_invalid_json_without_leaking_url() -> None:
     source_url = "https://vm.tiktok.com/SECRET123/"
 
     with pytest.raises(CobaltClientError) as raised:
-        await client.prepare(source_url)
+        await client.prepare(source_url, mode=CobaltMode.AUTO)
 
     assert source_url not in str(raised.value)
 
@@ -137,7 +201,7 @@ async def test_client_normalizes_json_read_failures_for_backend_fallback(error: 
     client, _, _, response = client_for(error)
 
     with pytest.raises(CobaltClientError) as raised:
-        await client.prepare("https://vm.tiktok.com/ABC123/")
+        await client.prepare("https://vm.tiktok.com/ABC123/", mode=CobaltMode.AUTO)
 
     assert raised.value.kind is CobaltErrorKind.RETRYABLE
     assert response.released is True
@@ -146,7 +210,7 @@ async def test_client_normalizes_json_read_failures_for_backend_fallback(error: 
 @pytest.mark.asyncio
 async def test_client_normalizes_validator_dns_failure_for_backend_fallback() -> None:
     response = FakeResponse({"status": "redirect", "url": "https://cdn.example/video.mp4"})
-    validator = FakeValidator(OSError("dns failed"))
+    validator = FakeValidator(error=OSError("dns failed"))
     client = CobaltClient(
         base_url="http://cobalt:9000",
         request_timeout_seconds=30,
@@ -155,7 +219,7 @@ async def test_client_normalizes_validator_dns_failure_for_backend_fallback() ->
     )
 
     with pytest.raises(CobaltClientError) as raised:
-        await client.prepare("https://vm.tiktok.com/ABC123/")
+        await client.prepare("https://vm.tiktok.com/ABC123/", mode=CobaltMode.AUTO)
 
     assert raised.value.kind is CobaltErrorKind.RETRYABLE
     assert response.released is True

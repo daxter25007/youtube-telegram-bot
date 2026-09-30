@@ -5,8 +5,14 @@ from typing import Any, Protocol
 
 from aiohttp import ClientError, ClientTimeout
 
-from app.services.cobalt.models import CobaltMediaResponse, CobaltResponseKind
+from app.services.cobalt.models import (
+    CobaltMediaResponse,
+    CobaltMode,
+    CobaltPreparedItem,
+    CobaltResponseKind,
+)
 from app.services.cobalt.security import SafeRemoteUrlValidator, UnsafeRemoteUrlError
+from app.services.media.models import MediaKind
 
 
 class CobaltErrorKind(StrEnum):
@@ -41,19 +47,33 @@ class CobaltClient:
         self.session = session
         self.validator = validator
 
-    async def prepare(self, source_url: str) -> CobaltMediaResponse:
+    async def prepare(
+        self,
+        source_url: str,
+        *,
+        mode: CobaltMode = CobaltMode.AUTO,
+        tiktok_full_audio: bool = False,
+    ) -> CobaltMediaResponse:
+        body: dict[str, object] = {
+            "url": source_url,
+            "downloadMode": mode.value,
+            "videoQuality": "max",
+            "allowH265": False,
+            "disableMetadata": False,
+            "alwaysProxy": True,
+            "localProcessing": "disabled",
+        }
+        if mode is CobaltMode.AUDIO:
+            body.update(
+                {
+                    "audioFormat": "best",
+                    "tiktokFullAudio": tiktok_full_audio,
+                }
+            )
         try:
             response = await self.session.post(
                 self.base_url,
-                json={
-                    "url": source_url,
-                    "downloadMode": "auto",
-                    "videoQuality": "max",
-                    "allowH265": False,
-                    "disableMetadata": False,
-                    "alwaysProxy": True,
-                    "localProcessing": "disabled",
-                },
+                json=body,
                 headers={"Accept": "application/json", "Content-Type": "application/json"},
                 timeout=ClientTimeout(total=self.request_timeout_seconds),
             )
@@ -71,11 +91,16 @@ class CobaltClient:
                     "Cobalt API вернул некорректный JSON",
                     kind=CobaltErrorKind.RETRYABLE,
                 ) from exc
-            return await self._parse_payload(payload)
+            return await self._parse_payload(payload, mode=mode)
         finally:
             response.release()
 
-    async def _parse_payload(self, payload: object) -> CobaltMediaResponse:
+    async def _parse_payload(
+        self,
+        payload: object,
+        *,
+        mode: CobaltMode,
+    ) -> CobaltMediaResponse:
         if not isinstance(payload, dict):
             raise CobaltClientError(
                 "Cobalt API вернул некорректную схему",
@@ -89,25 +114,50 @@ class CobaltClient:
                     "Cobalt picker имеет некорректную схему",
                     kind=CobaltErrorKind.RETRYABLE,
                 )
-            video = next(
-                (
-                    item
-                    for item in picker
-                    if isinstance(item, dict)
-                    and item.get("type") == "video"
-                    and isinstance(item.get("url"), str)
-                ),
-                None,
-            )
-            if video is None:
+            items: list[CobaltPreparedItem] = []
+            photo_index = 0
+            for raw_item in picker:
+                if not isinstance(raw_item, dict):
+                    continue
+                item_type = raw_item.get("type")
+                url_value = raw_item.get("url")
+                if item_type not in {"photo", "video"} or not isinstance(url_value, str):
+                    continue
+                media_kind = MediaKind.PHOTO if item_type == "photo" else MediaKind.VIDEO
+                if media_kind is MediaKind.PHOTO:
+                    part_key = f"photo_{photo_index:03d}"
+                    photo_index += 1
+                    fallback_name = f"{part_key}.jpg"
+                else:
+                    part_key = "video"
+                    fallback_name = "video.mp4"
+                items.append(
+                    CobaltPreparedItem(
+                        part_key=part_key,
+                        media_kind=media_kind,
+                        position=len(items),
+                        url=url_value,
+                        filename=str(raw_item.get("filename") or fallback_name),
+                        response_kind=CobaltResponseKind.PICKER,
+                    )
+                )
+            audio_url = payload.get("audio")
+            if isinstance(audio_url, str) and audio_url:
+                items.append(
+                    CobaltPreparedItem(
+                        part_key="audio",
+                        media_kind=MediaKind.AUDIO,
+                        position=len(items),
+                        url=audio_url,
+                        filename=str(payload.get("audioFilename") or "audio"),
+                        response_kind=CobaltResponseKind.PICKER,
+                    )
+                )
+            if not items:
                 raise CobaltClientError(
-                    "Cobalt не нашёл видео в публикации",
+                    "Cobalt не нашёл поддерживаемые медиа в публикации",
                     kind=CobaltErrorKind.UNSUPPORTED,
                 )
-            url = str(video["url"])
-            filename = str(video.get("filename") or "media.mp4")
-            kind = CobaltResponseKind.PICKER
-            internal_origin = None
         elif status in {"tunnel", "redirect"}:
             url_value = payload.get("url")
             if not isinstance(url_value, str) or not url_value:
@@ -115,10 +165,23 @@ class CobaltClient:
                     "Cobalt response не содержит media URL",
                     kind=CobaltErrorKind.RETRYABLE,
                 )
-            url = url_value
-            filename = str(payload.get("filename") or "media.mp4")
-            kind = CobaltResponseKind(str(status))
-            internal_origin = self.base_url if kind is CobaltResponseKind.TUNNEL else None
+            response_kind = CobaltResponseKind(str(status))
+            media_kind = MediaKind.AUDIO if mode is CobaltMode.AUDIO else MediaKind.VIDEO
+            part_key = media_kind.value
+            fallback_name = "audio" if media_kind is MediaKind.AUDIO else "video.mp4"
+            items = [
+                CobaltPreparedItem(
+                    part_key=part_key,
+                    media_kind=media_kind,
+                    position=0,
+                    url=url_value,
+                    filename=str(payload.get("filename") or fallback_name),
+                    response_kind=response_kind,
+                    internal_origin=(
+                        self.base_url if response_kind is CobaltResponseKind.TUNNEL else None
+                    ),
+                )
+            ]
         elif status == "error":
             raise CobaltClientError("Cobalt не получил видео", kind=CobaltErrorKind.RETRYABLE)
         elif status == "local-processing":
@@ -131,19 +194,23 @@ class CobaltClient:
                 "Cobalt API вернул неизвестный статус",
                 kind=CobaltErrorKind.RETRYABLE,
             )
-        try:
-            await self.validator.validate(url, allowed_internal_origin=internal_origin)
-        except UnsafeRemoteUrlError as exc:
-            raise CobaltClientError(
-                "Cobalt API вернул небезопасный URL",
-                kind=CobaltErrorKind.SECURITY,
-            ) from exc
-        except OSError as exc:
-            raise CobaltClientError(
-                "Не удалось проверить media URL Cobalt",
-                kind=CobaltErrorKind.RETRYABLE,
-            ) from exc
-        return CobaltMediaResponse(kind=kind, url=url, filename=filename)
+        for item in items:
+            try:
+                await self.validator.validate(
+                    item.url,
+                    allowed_internal_origin=item.internal_origin,
+                )
+            except UnsafeRemoteUrlError as exc:
+                raise CobaltClientError(
+                    "Cobalt API вернул небезопасный URL",
+                    kind=CobaltErrorKind.SECURITY,
+                ) from exc
+            except OSError as exc:
+                raise CobaltClientError(
+                    "Не удалось проверить media URL Cobalt",
+                    kind=CobaltErrorKind.RETRYABLE,
+                ) from exc
+        return CobaltMediaResponse(items=tuple(items))
 
     async def healthcheck(self) -> bool:
         try:
