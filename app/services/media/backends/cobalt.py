@@ -141,21 +141,52 @@ class CobaltBackend:
 
     async def prepare(self, request: MediaDownloadRequest) -> PreparedMedia:
         try:
-            visual = await self.client.prepare(request.url, mode=CobaltMode.AUTO)
-            items = list(visual.items)
-            if not any(item.media_kind is MediaKind.AUDIO for item in items):
-                audio = await self.client.prepare(
-                    request.url,
-                    mode=CobaltMode.AUDIO,
-                    tiktok_full_audio=True,
-                )
-                items.extend(audio.items)
+            visual = await self.client.prepare(
+                request.url,
+                mode=CobaltMode.AUTO,
+                tiktok_full_audio=True,
+            )
         except CobaltClientError as exc:
             kind = {
                 CobaltErrorKind.UNSUPPORTED: BackendErrorKind.UNSUPPORTED,
                 CobaltErrorKind.SECURITY: BackendErrorKind.SECURITY,
             }.get(exc.kind, BackendErrorKind.RETRYABLE)
             raise BackendError("Cobalt не подготовил публикацию", kind=kind) from exc
+
+        items = list(visual.items)
+        preparation_failures: list[MediaPartFailure] = []
+        if not any(item.media_kind is MediaKind.AUDIO for item in items):
+            try:
+                audio = await self.client.prepare(
+                    request.url,
+                    mode=CobaltMode.AUDIO,
+                    tiktok_full_audio=True,
+                )
+                items.extend(audio.items)
+            except CobaltClientError as exc:
+                kind = {
+                    CobaltErrorKind.UNSUPPORTED: BackendErrorKind.UNSUPPORTED,
+                    CobaltErrorKind.SECURITY: BackendErrorKind.SECURITY,
+                }.get(exc.kind, BackendErrorKind.RETRYABLE)
+                if kind is BackendErrorKind.SECURITY:
+                    raise BackendError("Cobalt вернул небезопасное аудио", kind=kind) from exc
+                preparation_failures.append(
+                    MediaPartFailure(
+                        part_key="audio",
+                        media_kind=MediaKind.AUDIO,
+                        error_kind=kind,
+                    )
+                )
+                items.append(
+                    CobaltPreparedItem(
+                        part_key="audio",
+                        media_kind=MediaKind.AUDIO,
+                        position=len(items),
+                        url="",
+                        filename="audio",
+                        response_kind=items[0].response_kind,
+                    )
+                )
         normalized = tuple(
             CobaltPreparedItem(
                 part_key=item.part_key,
@@ -177,7 +208,12 @@ class CobaltBackend:
             )
             for item in normalized
         )
-        return PreparedMedia(request=request, parts=parts, backend_payload=normalized)
+        return PreparedMedia(
+            request=request,
+            parts=parts,
+            backend_payload=normalized,
+            failures=tuple(preparation_failures),
+        )
 
     async def download_prepared(
         self,
@@ -192,9 +228,11 @@ class CobaltBackend:
         ):
             raise BackendError("Некорректная подготовка Cobalt", kind=BackendErrorKind.RETRYABLE)
         artifacts: list[MediaArtifact] = []
-        failures: list[MediaPartFailure] = []
+        failures: list[MediaPartFailure] = list(prepared.failures)
         for item in payload:
             if item.part_key not in include_keys:
+                continue
+            if any(failure.part_key == item.part_key for failure in prepared.failures):
                 continue
             try:
                 artifacts.append(await self._download_item(item, job_dir, progress))

@@ -48,6 +48,7 @@ class PreparedMedia:
     request: MediaDownloadRequest
     parts: tuple[MediaPart, ...]
     backend_payload: object | None = None
+    failures: tuple[MediaPartFailure, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

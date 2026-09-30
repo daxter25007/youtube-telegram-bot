@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.services.cobalt.client import CobaltClientError, CobaltErrorKind
 from app.services.cobalt.models import (
     CobaltMediaResponse,
     CobaltMode,
@@ -23,7 +24,10 @@ class FakeCobaltClient:
 
     async def prepare(self, url: str, *, mode: CobaltMode, tiktok_full_audio: bool = False):
         self.calls.append((mode, tiktok_full_audio))
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 class FakeContent:
@@ -125,7 +129,7 @@ async def test_prepare_combines_visuals_with_separate_full_audio() -> None:
         ("video", MediaKind.VIDEO, 0),
         ("audio", MediaKind.AUDIO, 1),
     ]
-    assert client.calls == [(CobaltMode.AUTO, False), (CobaltMode.AUDIO, True)]
+    assert client.calls == [(CobaltMode.AUTO, True), (CobaltMode.AUDIO, True)]
 
 
 @pytest.mark.asyncio
@@ -147,7 +151,30 @@ async def test_prepare_reuses_picker_audio_without_second_request() -> None:
     prepared = await backend.prepare(request())
 
     assert [part.key for part in prepared.parts] == ["photo_000", "audio"]
-    assert client.calls == [(CobaltMode.AUTO, False)]
+    assert client.calls == [(CobaltMode.AUTO, True)]
+
+
+@pytest.mark.asyncio
+async def test_audio_prepare_failure_keeps_visual_part() -> None:
+    visual = CobaltMediaResponse(
+        items=(item("video", MediaKind.VIDEO, "https://cdn/video.mp4", "video.mp4", 0),)
+    )
+    client = FakeCobaltClient(
+        visual,
+        CobaltClientError("audio failed", kind=CobaltErrorKind.RETRYABLE),  # type: ignore[arg-type]
+    )
+    backend = CobaltBackend(
+        client=client,  # type: ignore[arg-type]
+        validator=FakeValidator(),  # type: ignore[arg-type]
+        opener=FakeOpener(FakeResponse([b"video"], headers={"Content-Type": "video/mp4"})),  # type: ignore[arg-type]
+        max_upload_bytes=100,
+    )
+    prepared = await backend.prepare(request())
+
+    assert [part.key for part in prepared.parts] == ["video", "audio"]
+    assert [(failure.part_key, failure.error_kind) for failure in prepared.failures] == [
+        ("audio", BackendErrorKind.RETRYABLE)
+    ]
 
 
 @pytest.mark.asyncio

@@ -72,6 +72,14 @@ def _local_uri(media: MediaArtifact) -> str:
 
 
 class TelegramFileService:
+    async def validate_cached(self, bot: Bot, *, part_key: str, file_id: str) -> None:
+        try:
+            await bot.get_file(file_id)
+        except TelegramBadRequest as error:
+            if _invalid_file_id(error):
+                raise InvalidCachedPartError(part_key) from error
+            raise
+
     async def send_cached(
         self,
         bot: Bot,

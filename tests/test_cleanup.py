@@ -31,7 +31,7 @@ from app.services.media.models import (
     MediaPart,
     MediaSource,
 )
-from app.services.telegram_files import UploadResult
+from app.services.telegram_files import InvalidCachedPartError, UploadResult
 
 
 class FakeMessage:
@@ -101,10 +101,7 @@ class CachedDeliveryTelegramFiles:
 
 class InvalidCachedDeliveryTelegramFiles:
     async def send_cached(self, bot, **kwargs):
-        raise TelegramBadRequest(
-            method=SendMessage(chat_id=1, text="cached"),
-            message="wrong file identifier",
-        )
+        raise InvalidCachedPartError(kwargs["part_key"])
 
 
 class UnrelatedBadRequestCachedDeliveryTelegramFiles:

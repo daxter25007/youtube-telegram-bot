@@ -62,14 +62,9 @@ class CobaltClient:
             "disableMetadata": False,
             "alwaysProxy": True,
             "localProcessing": "disabled",
+            "audioFormat": "best",
+            "tiktokFullAudio": tiktok_full_audio,
         }
-        if mode is CobaltMode.AUDIO:
-            body.update(
-                {
-                    "audioFormat": "best",
-                    "tiktokFullAudio": tiktok_full_audio,
-                }
-            )
         try:
             response = await self.session.post(
                 self.base_url,
@@ -139,6 +134,7 @@ class CobaltClient:
                         url=url_value,
                         filename=str(raw_item.get("filename") or fallback_name),
                         response_kind=CobaltResponseKind.PICKER,
+                        internal_origin=self.base_url,
                     )
                 )
             audio_url = payload.get("audio")
@@ -151,6 +147,7 @@ class CobaltClient:
                         url=audio_url,
                         filename=str(payload.get("audioFilename") or "audio"),
                         response_kind=CobaltResponseKind.PICKER,
+                        internal_origin=self.base_url,
                     )
                 )
             if not items:

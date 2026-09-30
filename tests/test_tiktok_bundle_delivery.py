@@ -2,6 +2,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from aiogram.exceptions import TelegramNetworkError
+from aiogram.methods import SendMessage
 
 from app.database.base import Base
 from app.database.models import DownloadStatus, User
@@ -90,6 +92,23 @@ class RecordingTelegramFiles:
 class InvalidPhotoTelegramFiles(RecordingTelegramFiles):
     async def send_photo_album(self, bot, *, photos, **kwargs):
         raise InvalidCachedPartError("photo_001")
+
+
+class ExpiredCacheTelegramFiles(RecordingTelegramFiles):
+    async def validate_cached(self, bot, *, part_key, file_id):
+        if part_key == "photo_001":
+            raise InvalidCachedPartError(part_key)
+
+
+class AudioUploadFailureTelegramFiles(RecordingTelegramFiles):
+    async def send_artifacts(self, bot, *, package, **kwargs):
+        artifact = package.artifacts[0]
+        if artifact.media_kind is MediaKind.AUDIO:
+            raise TelegramNetworkError(
+                method=SendMessage(chat_id=1, text="upload"),
+                message="network error",
+            )
+        return await super().send_artifacts(bot, package=package, **kwargs)
 
 
 class RecordingRouter:
@@ -341,4 +360,129 @@ async def test_partial_failure_delivers_survivor_and_completes_with_notice(tmp_p
     assert download is not None and download.status is DownloadStatus.COMPLETED
     assert telegram.sent == ["audio"]
     assert any("частично" in text.casefold() for text in progress.texts)
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_expired_partial_cache_is_downloaded_again_in_same_run(tmp_path: Path) -> None:
+    parts = (
+        MediaPart(key="photo_000", media_kind=MediaKind.PHOTO, position=0),
+        MediaPart(key="photo_001", media_kind=MediaKind.PHOTO, position=1),
+        MediaPart(key="audio", media_kind=MediaKind.AUDIO, position=2),
+    )
+    database, user_id, download_id = await setup_database(tmp_path)
+    async with database.session() as session:
+        await MediaManifestRepository(session).upsert(
+            source=MediaSource.TIKTOK, source_media_id="post-1", parts=parts
+        )
+        for part in parts:
+            await store_cache(session, part)
+    router = RecordingRouter(parts)
+    telegram = ExpiredCacheTelegramFiles()
+
+    await manager(database, tmp_path, router, telegram).run(
+        bot=object(),  # type: ignore[arg-type]
+        chat_id=123,
+        telegram_user_id=123,
+        user_id=user_id,
+        download_id=download_id,
+        source_url="https://vm.tiktok.com/POST1/",
+        source=MediaSource.TIKTOK,
+        source_media_id="post-1",
+        media_kind=MediaKind.VIDEO,
+        option_key="tiktok_bundle",
+        policy=DownloadPolicy(format_selector="best"),
+        title="TikTok post",
+        progress_message=FakeMessage(),  # type: ignore[arg-type]
+    )
+
+    assert router.requested == frozenset({"photo_001"})
+    assert telegram.sent == ["photo_000", "photo_001", "audio"]
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_audio_upload_failure_keeps_and_caches_successful_video(tmp_path: Path) -> None:
+    parts = (
+        MediaPart(key="video", media_kind=MediaKind.VIDEO, position=0),
+        MediaPart(key="audio", media_kind=MediaKind.AUDIO, position=1),
+    )
+    database, user_id, download_id = await setup_database(tmp_path)
+    telegram = AudioUploadFailureTelegramFiles()
+    progress = FakeMessage()
+
+    await manager(database, tmp_path, RecordingRouter(parts), telegram).run(
+        bot=object(),  # type: ignore[arg-type]
+        chat_id=123,
+        telegram_user_id=123,
+        user_id=user_id,
+        download_id=download_id,
+        source_url="https://vm.tiktok.com/POST1/",
+        source=MediaSource.TIKTOK,
+        source_media_id="post-1",
+        media_kind=MediaKind.VIDEO,
+        option_key="tiktok_bundle",
+        policy=DownloadPolicy(format_selector="best"),
+        title="TikTok post",
+        progress_message=progress,  # type: ignore[arg-type]
+    )
+
+    async with database.session() as session:
+        cached = await MediaCacheRepository(session).list_for_media(
+            source=MediaSource.TIKTOK, source_media_id="post-1"
+        )
+        download = await DownloadRepository(session).get(download_id)
+    assert telegram.sent == ["video"]
+    assert {(item.media_kind, item.requested_option) for item in cached} == {
+        (MediaKind.VIDEO, "video")
+    }
+    assert download is not None and download.status is DownloadStatus.COMPLETED
+    assert any("аудио" in text.casefold() for text in progress.texts)
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_video_fallback_does_not_replace_known_photo_manifest(tmp_path: Path) -> None:
+    manifest_parts = (
+        MediaPart(key="photo_000", media_kind=MediaKind.PHOTO, position=0),
+        MediaPart(key="photo_001", media_kind=MediaKind.PHOTO, position=1),
+        MediaPart(key="audio", media_kind=MediaKind.AUDIO, position=2),
+    )
+    fallback_parts = (
+        MediaPart(key="video", media_kind=MediaKind.VIDEO, position=0),
+        MediaPart(key="audio", media_kind=MediaKind.AUDIO, position=1),
+    )
+    database, user_id, download_id = await setup_database(tmp_path)
+    async with database.session() as session:
+        await MediaManifestRepository(session).upsert(
+            source=MediaSource.TIKTOK,
+            source_media_id="post-1",
+            parts=manifest_parts,
+        )
+        await store_cache(session, manifest_parts[0])
+    router = RecordingRouter(fallback_parts)
+
+    await manager(database, tmp_path, router, RecordingTelegramFiles()).run(
+        bot=object(),  # type: ignore[arg-type]
+        chat_id=123,
+        telegram_user_id=123,
+        user_id=user_id,
+        download_id=download_id,
+        source_url="https://vm.tiktok.com/POST1/",
+        source=MediaSource.TIKTOK,
+        source_media_id="post-1",
+        media_kind=MediaKind.VIDEO,
+        option_key="tiktok_bundle",
+        policy=DownloadPolicy(format_selector="best"),
+        title="TikTok post",
+        progress_message=FakeMessage(),  # type: ignore[arg-type]
+    )
+
+    async with database.session() as session:
+        manifest = await MediaManifestRepository(session).get(
+            source=MediaSource.TIKTOK, source_media_id="post-1"
+        )
+    assert router.requested == frozenset({"audio"})
+    assert manifest is not None
+    assert [part.key for part in manifest.parts] == ["photo_000", "photo_001", "audio"]
     await database.close()

@@ -4,7 +4,7 @@ import pytest
 
 from app.services.cobalt.client import CobaltClient, CobaltClientError, CobaltErrorKind
 from app.services.cobalt.models import CobaltMode, CobaltResponseKind
-from app.services.cobalt.security import UnsafeRemoteUrlError
+from app.services.cobalt.security import SafeRemoteUrlValidator, UnsafeRemoteUrlError
 from app.services.media.models import MediaKind
 
 
@@ -83,6 +83,7 @@ async def test_client_parses_single_video_response(status: str) -> None:
     assert body["downloadMode"] == "auto"
     assert body["alwaysProxy"] is True
     assert body["allowH265"] is False
+    assert body["audioFormat"] == "best"
     expected_origin = "http://cobalt:9000" if status == "tunnel" else None
     assert validator.calls == [(item.url, expected_origin)]
     assert response.released is True
@@ -111,10 +112,12 @@ async def test_client_preserves_ordered_photos_and_picker_audio() -> None:
     ]
     assert result.items[2].filename == "sound.m4a"
     assert validator.calls == [
-        ("https://cdn.example/1.jpg", None),
-        ("https://cdn.example/2.webp", None),
-        ("https://cdn.example/sound.m4a", None),
+        ("https://cdn.example/1.jpg", "http://cobalt:9000"),
+        ("https://cdn.example/2.webp", "http://cobalt:9000"),
+        ("https://cdn.example/sound.m4a", "http://cobalt:9000"),
     ]
+    body = client.session.posts[0][1]["json"]  # type: ignore[attr-defined]
+    assert body["audioFormat"] == "best"
 
 
 @pytest.mark.asyncio
@@ -148,6 +151,27 @@ async def test_client_rejects_unsafe_item_in_picker_before_download() -> None:
                 {"type": "photo", "url": "https://cdn.example/1.jpg"},
                 {"type": "photo", "url": "http://127.0.0.1/private.jpg"},
             ],
+        },
+        validator=validator,
+    )
+
+    with pytest.raises(CobaltClientError) as raised:
+        await client.prepare("https://vm.tiktok.com/ABC123/", mode=CobaltMode.AUTO)
+
+    assert raised.value.kind is CobaltErrorKind.SECURITY
+
+
+@pytest.mark.asyncio
+async def test_picker_allows_only_configured_internal_cobalt_origin() -> None:
+    async def public_resolver(host: str, port: int) -> tuple[str, ...]:
+        return ("93.184.216.34",)
+
+    validator = SafeRemoteUrlValidator(public_resolver)
+    client, _, _, _ = client_for(
+        {
+            "status": "picker",
+            "picker": [{"type": "photo", "url": "http://cobalt:9000/tunnel?id=1"}],
+            "audio": "http://127.0.0.1/private.m4a",
         },
         validator=validator,
     )

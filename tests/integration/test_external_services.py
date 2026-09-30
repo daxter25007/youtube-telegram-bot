@@ -70,7 +70,7 @@ async def test_tiktok_metadata_when_url_is_provided() -> None:
         max_upload_bytes=1950 * 1024 * 1024,
     ).fetch(parsed)
     assert metadata.media_id
-    assert metadata.options[0].key == "best_video"
+    assert metadata.options[0].key == "tiktok_bundle"
 
 
 @pytest.mark.asyncio
@@ -88,4 +88,4 @@ async def test_cobalt_prepares_tiktok_video_when_url_is_provided() -> None:
             validator=validator,
         ).prepare(url)
 
-    assert response.url
+    assert response.items

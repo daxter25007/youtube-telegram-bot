@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.services.media.backends.base import (
-    BackendError,
     BackendErrorKind,
     DownloadBackend,
     MediaDownloadRequest,
+    MediaPartFailure,
     PreparedMedia,
 )
 from app.services.media.downloader import DownloadError, MediaDownloader, ProgressCallback
@@ -43,6 +43,7 @@ class YtDlpBackend:
         progress: ProgressCallback,
     ) -> MediaPackage:
         artifacts = []
+        failures: list[MediaPartFailure] = []
         for part in prepared.parts:
             if part.key not in include_keys:
                 continue
@@ -66,10 +67,14 @@ class YtDlpBackend:
                     progress=progress,
                     part_key=part.key,
                 )
-            except DownloadError as exc:
-                raise BackendError(
-                    "yt-dlp backend не получил медиа",
-                    kind=BackendErrorKind.RETRYABLE,
-                ) from exc
+            except DownloadError:
+                failures.append(
+                    MediaPartFailure(
+                        part_key=part.key,
+                        media_kind=part.media_kind,
+                        error_kind=BackendErrorKind.RETRYABLE,
+                    )
+                )
+                continue
             artifacts.extend(package.artifacts)
-        return MediaPackage(artifacts=tuple(artifacts))
+        return MediaPackage(artifacts=tuple(artifacts), failures=tuple(failures))
