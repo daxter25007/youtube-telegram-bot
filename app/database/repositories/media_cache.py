@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -127,6 +127,46 @@ class MediaCacheRepository:
             )
         )
         return set(result)
+
+    async def list_for_media(
+        self,
+        *,
+        source: MediaSource,
+        source_media_id: str,
+    ) -> list[MediaCache]:
+        result = await self.session.scalars(
+            select(MediaCache).where(
+                MediaCache.source == source,
+                MediaCache.source_media_id == source_media_id,
+            )
+        )
+        return list(result)
+
+    async def get_many(
+        self,
+        *,
+        source: MediaSource,
+        source_media_id: str,
+        identities: set[tuple[MediaKind, str]],
+    ) -> dict[tuple[MediaKind, str], MediaCache]:
+        if not identities:
+            return {}
+        result = await self.session.scalars(
+            select(MediaCache).where(
+                MediaCache.source == source,
+                MediaCache.source_media_id == source_media_id,
+                or_(
+                    *(
+                        and_(
+                            MediaCache.media_kind == media_kind,
+                            MediaCache.requested_option == part_key,
+                        )
+                        for media_kind, part_key in identities
+                    )
+                ),
+            )
+        )
+        return {(item.media_kind, item.requested_option): item for item in result}
 
     async def delete(self, item_id: int) -> None:
         await self.session.execute(delete(MediaCache).where(MediaCache.id == item_id))

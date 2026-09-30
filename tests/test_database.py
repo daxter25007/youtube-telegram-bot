@@ -10,7 +10,7 @@ from app.database.models import DownloadStatus, User
 from app.database.repositories.channels import ChannelRepository
 from app.database.repositories.downloads import DownloadRepository
 from app.database.repositories.requests import DownloadRequestRepository
-from app.services.media.models import MediaKind, MediaSource
+from app.services.media.models import MediaKind, MediaPart, MediaSource
 
 
 @pytest.fixture
@@ -154,3 +154,79 @@ async def test_download_records_cache_hit(session) -> None:
     )
 
     assert download.cache_hit is True
+
+
+@pytest.mark.asyncio
+async def test_media_manifest_upserts_ordered_parts(session) -> None:
+    from app.database.repositories.media_manifests import MediaManifestRepository
+
+    repository = MediaManifestRepository(session)
+    first = (
+        MediaPart(key="photo_000", media_kind=MediaKind.PHOTO, position=0),
+        MediaPart(key="audio", media_kind=MediaKind.AUDIO, position=1, filename="sound.opus"),
+    )
+    await repository.upsert(
+        source=MediaSource.TIKTOK,
+        source_media_id="post-1",
+        parts=first,
+    )
+    replacement = (
+        MediaPart(key="video", media_kind=MediaKind.VIDEO, position=0),
+        MediaPart(key="audio", media_kind=MediaKind.AUDIO, position=1, filename="sound.m4a"),
+    )
+    await repository.upsert(
+        source=MediaSource.TIKTOK,
+        source_media_id="post-1",
+        parts=replacement,
+    )
+
+    manifest = await repository.get(
+        source=MediaSource.TIKTOK,
+        source_media_id="post-1",
+    )
+
+    assert manifest is not None
+    assert manifest.parts == replacement
+
+
+@pytest.mark.asyncio
+async def test_media_cache_lists_and_selects_mixed_part_identities(session) -> None:
+    from app.database.repositories.media_cache import MediaCacheRepository
+
+    repository = MediaCacheRepository(session)
+    for kind, key in (
+        (MediaKind.VIDEO, "video"),
+        (MediaKind.PHOTO, "photo_000"),
+        (MediaKind.AUDIO, "audio"),
+    ):
+        await repository.store(
+            source=MediaSource.TIKTOK,
+            source_media_id="post-1",
+            media_kind=kind,
+            requested_option=key,
+            telegram_file_id=f"file-{key}",
+            telegram_file_unique_id=f"unique-{key}",
+            sent_as_document=kind is MediaKind.AUDIO,
+            actual_quality=None,
+            file_size=10,
+        )
+
+    listed = await repository.list_for_media(
+        source=MediaSource.TIKTOK,
+        source_media_id="post-1",
+    )
+    selected = await repository.get_many(
+        source=MediaSource.TIKTOK,
+        source_media_id="post-1",
+        identities={(MediaKind.PHOTO, "photo_000"), (MediaKind.AUDIO, "audio")},
+    )
+
+    assert {(item.media_kind, item.requested_option) for item in listed} == {
+        (MediaKind.VIDEO, "video"),
+        (MediaKind.PHOTO, "photo_000"),
+        (MediaKind.AUDIO, "audio"),
+    }
+    assert set(selected) == {
+        (MediaKind.PHOTO, "photo_000"),
+        (MediaKind.AUDIO, "audio"),
+    }

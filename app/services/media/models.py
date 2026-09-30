@@ -72,6 +72,34 @@ class MediaMetadata:
 
 
 @dataclass(frozen=True, slots=True)
+class MediaPart:
+    key: str
+    media_kind: MediaKind
+    position: int
+    filename: str | None = None
+    mime_type: str | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "key": self.key,
+            "media_kind": self.media_kind.value,
+            "position": self.position,
+            "filename": self.filename,
+            "mime_type": self.mime_type,
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, object]) -> MediaPart:
+        return cls(
+            key=str(value["key"]),
+            media_kind=MediaKind(str(value["media_kind"])),
+            position=int(value["position"]),
+            filename=str(value["filename"]) if value.get("filename") else None,
+            mime_type=str(value["mime_type"]) if value.get("mime_type") else None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DownloadPolicy:
     format_selector: str
     media_kind: MediaKind = MediaKind.VIDEO
