@@ -25,6 +25,7 @@ class DownloadRepository:
         video_title: str,
         requested_option: str,
         requested_quality: int | None,
+        cache_hit: bool = False,
         status: DownloadStatus = DownloadStatus.CREATED,
     ) -> Download:
         item = Download(
@@ -36,6 +37,7 @@ class DownloadRepository:
             video_title=video_title,
             requested_option=requested_option,
             requested_quality=requested_quality,
+            cache_hit=cache_hit,
             status=status,
         )
         self.session.add(item)
@@ -55,6 +57,7 @@ class DownloadRepository:
         file_size: int | None = None,
         processing_seconds: float | None = None,
         backend: DownloadBackend | None = None,
+        cache_hit: bool | None = None,
     ) -> None:
         item = await self.session.get(Download, download_id)
         if item is None:
@@ -79,6 +82,8 @@ class DownloadRepository:
             item.processing_seconds = processing_seconds
         if backend is not None:
             item.backend = backend
+        if cache_hit is not None:
+            item.cache_hit = cache_hit
         await self.session.flush()
 
     async def recent(self, limit: int = 20) -> list[Download]:
@@ -89,6 +94,7 @@ class DownloadRepository:
 
     async def cancel_incomplete_after_restart(self) -> int:
         incomplete = [
+            DownloadStatus.CREATED,
             DownloadStatus.QUEUED,
             DownloadStatus.DOWNLOADING,
             DownloadStatus.MERGING,

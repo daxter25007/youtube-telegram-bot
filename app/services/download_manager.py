@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 import time
 from pathlib import Path
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.types import Message
 
 from app.config import Settings
 from app.database.models import DownloadStatus
 from app.database.repositories.channels import ChannelRepository
 from app.database.repositories.downloads import DownloadRepository
+from app.database.repositories.media_cache import MediaCacheRepository
 from app.database.repositories.users import UserRepository
 from app.database.session import Database
 from app.services.cleanup import TempStorage
@@ -27,10 +29,69 @@ from app.services.media.backends.router import MediaBackendRouter
 from app.services.media.models import DownloadPolicy, MediaKind, MediaSource
 from app.services.subscriptions import SubscriptionService
 from app.services.telegram_files import TelegramFileService
-from app.utils.filenames import sanitize_display_filename
 from app.utils.filesize import is_too_large
 
 logger = logging.getLogger(__name__)
+TELEGRAM_CAPTION_MAX_UTF16 = 1024
+INVALID_CACHED_FILE_MARKERS = (
+    "wrong file identifier",
+    "wrong remote file identifier",
+    "invalid file id",
+    "file_id",
+    "file reference expired",
+    "file_reference_expired",
+)
+
+
+def _utf16_length(value: str) -> int:
+    return len(value.encode("utf-16-le")) // 2
+
+
+def _truncate_utf16(value: str, max_units: int) -> str:
+    if _utf16_length(value) <= max_units:
+        return value
+    if max_units <= 0:
+        return ""
+    remaining = max_units - 1
+    result: list[str] = []
+    for character in value:
+        units = _utf16_length(character)
+        if units > remaining:
+            break
+        result.append(character)
+        remaining -= units
+    return f"{''.join(result)}…"
+
+
+def format_video_caption(
+    *,
+    title: str,
+    source_url: str,
+    height: int | None,
+    bot_username: str,
+) -> str:
+    username = bot_username.lstrip("@")
+    visible_without_title = f"🍿 \n\n🔗 {source_url}\n\n"
+    if height is not None:
+        visible_without_title += f"📺 {height}p\n\n"
+    visible_without_title += f"\u200b💙 @{username}"
+    title_budget = TELEGRAM_CAPTION_MAX_UTF16 - _utf16_length(visible_without_title)
+    safe_title = html.escape(_truncate_utf16(title, title_budget))
+    safe_url = html.escape(source_url, quote=True)
+    safe_username = html.escape(username)
+    lines = [
+        f"🍿 <code>{safe_title}</code>",
+        f'🔗 <a href="{safe_url}">{safe_url}</a>',
+    ]
+    if height is not None:
+        lines.append(f"📺 {height}p")
+    lines.append(f'<a href="{safe_url}">&#8203;</a>💙 @{safe_username}')
+    return "\n\n".join(lines)
+
+
+def _is_invalid_cached_file_error(error: TelegramBadRequest) -> bool:
+    message = str(error).casefold()
+    return any(marker in message for marker in INVALID_CACHED_FILE_MARKERS)
 
 
 class ProgressReporter:
@@ -76,6 +137,7 @@ class DownloadManager:
         backend_router: MediaBackendRouter,
         subscriptions: SubscriptionService,
         telegram_files: TelegramFileService,
+        bot_username: str,
     ) -> None:
         self.database = database
         self.settings = settings
@@ -83,6 +145,7 @@ class DownloadManager:
         self.backend_router = backend_router
         self.subscriptions = subscriptions
         self.telegram_files = telegram_files
+        self.bot_username = bot_username
 
     async def cancel_queued(self, download_id: int, progress_message: Message) -> None:
         await self._status(download_id, DownloadStatus.CANCELLED, error_type="shutdown")
@@ -90,6 +153,74 @@ class DownloadManager:
             await progress_message.edit_text("⌛ Загрузка отменена: бот завершает работу.")
         except TelegramAPIError:
             logger.debug("Queued cancellation message could not be edited")
+
+    async def try_cached(
+        self,
+        *,
+        bot: Bot,
+        chat_id: int,
+        user_id: int,
+        download_id: int,
+        source: MediaSource,
+        source_media_id: str,
+        media_kind: MediaKind,
+        option_key: str,
+        title: str,
+        source_url: str,
+        progress_message: Message,
+    ) -> bool:
+        started = time.monotonic()
+        async with self.database.session() as session:
+            cached = await MediaCacheRepository(session).get(
+                source=source,
+                source_media_id=source_media_id,
+                media_kind=media_kind,
+                requested_option=option_key,
+            )
+        if cached is None:
+            return False
+
+        try:
+            await self.telegram_files.send_cached(
+                bot,
+                chat_id=chat_id,
+                file_id=cached.telegram_file_id,
+                sent_as_document=cached.sent_as_document,
+                caption=format_video_caption(
+                    title=title,
+                    source_url=source_url,
+                    height=cached.actual_quality,
+                    bot_username=self.bot_username,
+                ),
+            )
+        except TelegramBadRequest as error:
+            if not _is_invalid_cached_file_error(error):
+                raise
+            logger.info(
+                "Discarding invalid Telegram cache source=%s media_id=%s option=%s",
+                source.value,
+                source_media_id,
+                option_key,
+            )
+            async with self.database.session() as session:
+                await MediaCacheRepository(session).delete(cached.id)
+            return False
+        async with self.database.session() as session:
+            await MediaCacheRepository(session).touch(cached.id)
+            await DownloadRepository(session).set_status(
+                download_id,
+                DownloadStatus.COMPLETED,
+                actual_quality=cached.actual_quality,
+                file_size=cached.file_size,
+                processing_seconds=time.monotonic() - started,
+                cache_hit=True,
+            )
+            await UserRepository(session).increment_downloads(user_id)
+        try:
+            await progress_message.delete()
+        except TelegramAPIError:
+            logger.debug("Cached progress message could not be deleted")
+        return True
 
     async def run(
         self,
@@ -101,6 +232,7 @@ class DownloadManager:
         download_id: int,
         source_url: str,
         source: MediaSource,
+        source_media_id: str,
         media_kind: MediaKind,
         option_key: str,
         policy: DownloadPolicy,
@@ -186,19 +318,30 @@ class DownloadManager:
                     return
                 await self._status(download_id, DownloadStatus.UPLOADING, file_size=file_size)
                 await reporter.update("📤 Отправляю в Telegram...", force=True)
-                await self.telegram_files.send(
+                upload_result = await self.telegram_files.send(
                     bot,
                     chat_id=chat_id,
                     package=package,
-                    display_filename=sanitize_display_filename(
-                        title, primary.path.suffix or ".mp4"
-                    ),
-                    caption=(
-                        f"🎬 {title}\n📺 {primary.height}p" if primary.height else f"🎬 {title}"
+                    caption=format_video_caption(
+                        title=title,
+                        source_url=source_url,
+                        height=primary.height,
+                        bot_username=self.bot_username,
                     ),
                 )
                 elapsed = time.monotonic() - started
                 async with self.database.session() as session:
+                    await MediaCacheRepository(session).store(
+                        source=source,
+                        source_media_id=source_media_id,
+                        media_kind=media_kind,
+                        requested_option=option_key,
+                        telegram_file_id=upload_result.file_id,
+                        telegram_file_unique_id=upload_result.file_unique_id,
+                        sent_as_document=upload_result.sent_as_document,
+                        actual_quality=primary.height,
+                        file_size=file_size,
+                    )
                     await DownloadRepository(session).set_status(
                         download_id,
                         DownloadStatus.COMPLETED,
@@ -208,7 +351,10 @@ class DownloadManager:
                         backend=result.backend,
                     )
                     await UserRepository(session).increment_downloads(user_id)
-                await reporter.update("✅ Готово", force=True)
+                try:
+                    await progress_message.delete()
+                except TelegramAPIError:
+                    logger.debug("Completed progress message could not be deleted")
         except TimeoutError:
             await self._status(
                 download_id,

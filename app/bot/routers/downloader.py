@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +14,7 @@ from app.config import Settings
 from app.database.models import DownloadRequest, DownloadStatus, User
 from app.database.repositories.channels import ChannelRepository
 from app.database.repositories.downloads import DownloadRepository
+from app.database.repositories.media_cache import MediaCacheRepository
 from app.database.repositories.requests import DownloadRequestRepository
 from app.services.download_manager import DownloadManager
 from app.services.media.errors import MetadataError, MetadataErrorKind
@@ -96,9 +98,37 @@ async def _enqueue_option(
         video_title=title,
         requested_option=option.key,
         requested_quality=(option.height if request.source is MediaSource.YOUTUBE else None),
-        status=DownloadStatus.QUEUED,
+        status=DownloadStatus.CREATED,
     )
     await DownloadRequestRepository(session).delete(request.id)
+    await session.commit()
+    try:
+        delivered_from_cache = await download_manager.try_cached(
+            bot=bot,
+            chat_id=progress_message.chat.id,
+            user_id=request.user_id,
+            download_id=download.id,
+            source=request.source,
+            source_media_id=request.source_media_id,
+            media_kind=request.media_kind,
+            option_key=option.key,
+            title=title,
+            source_url=request.source_url,
+            progress_message=progress_message,
+        )
+    except TelegramAPIError:
+        logger.exception("Telegram cache delivery failed for download_id=%s", download.id)
+        await _set_download_status(
+            session,
+            download.id,
+            DownloadStatus.FAILED,
+            error_type="telegram_api",
+        )
+        await progress_message.edit_text("❌ Не удалось отправить файл в Telegram.")
+        return
+    if delivered_from_cache:
+        return
+    await DownloadRepository(session).set_status(download.id, DownloadStatus.QUEUED)
     await session.commit()
     await progress_message.edit_text("⏳ Загрузка поставлена в очередь")
 
@@ -111,6 +141,7 @@ async def _enqueue_option(
             download_id=download.id,
             source_url=request.source_url,
             source=request.source,
+            source_media_id=request.source_media_id,
             media_kind=request.media_kind,
             option_key=option.key,
             policy=policy,
@@ -253,9 +284,18 @@ async def receive_url(
             bot=bot,
         )
         return
+    cached_option_keys = await MediaCacheRepository(session).cached_option_keys(
+        source=metadata.source,
+        source_media_id=metadata.media_id,
+        media_kind=metadata.media_kind,
+    )
     await status_message.edit_text(
         f"🎬 {metadata.title}\n\n⏱ {format_duration(metadata.duration)}\n\nВыберите качество:",
-        reply_markup=quality_keyboard(request.id, list(metadata.options)),
+        reply_markup=quality_keyboard(
+            request.id,
+            list(metadata.options),
+            cached_option_keys=cached_option_keys,
+        ),
     )
 
 

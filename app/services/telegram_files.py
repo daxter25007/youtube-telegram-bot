@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from urllib.parse import quote
 
 from aiogram import Bot
+from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 
@@ -15,19 +16,56 @@ class UploadResult:
     message: Message
     sent_as_document: bool
 
+    @property
+    def file_id(self) -> str:
+        return self._file().file_id
+
+    @property
+    def file_unique_id(self) -> str:
+        return self._file().file_unique_id
+
+    def _file(self):
+        media = self.message.document if self.sent_as_document else self.message.video
+        if media is None:
+            raise UnsupportedMediaPackageError("Telegram не вернул отправленный файл")
+        return media
+
 
 class UnsupportedMediaPackageError(RuntimeError):
     pass
 
 
 class TelegramFileService:
+    async def send_cached(
+        self,
+        bot: Bot,
+        *,
+        chat_id: int,
+        file_id: str,
+        sent_as_document: bool,
+        caption: str,
+    ) -> Message:
+        if sent_as_document:
+            return await bot.send_document(
+                chat_id,
+                document=file_id,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+            )
+        return await bot.send_video(
+            chat_id,
+            video=file_id,
+            caption=caption,
+            parse_mode=ParseMode.HTML,
+            supports_streaming=True,
+        )
+
     async def send(
         self,
         bot: Bot,
         *,
         chat_id: int,
         package: MediaPackage,
-        display_filename: str,
         caption: str,
     ) -> UploadResult:
         if len(package.artifacts) != 1:
@@ -44,7 +82,8 @@ class TelegramFileService:
             message = await bot.send_video(
                 chat_id,
                 video=local_uri,
-                caption=f"{caption}\n📄 {display_filename}",
+                caption=caption,
+                parse_mode=ParseMode.HTML,
                 duration=media.duration,
                 width=media.width,
                 height=media.height,
@@ -55,6 +94,7 @@ class TelegramFileService:
             message = await bot.send_document(
                 chat_id,
                 document=local_uri,
-                caption=f"{caption}\n📄 {display_filename}",
+                caption=caption,
+                parse_mode=ParseMode.HTML,
             )
             return UploadResult(message=message, sent_as_document=True)

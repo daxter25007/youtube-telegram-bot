@@ -166,6 +166,7 @@ async def run() -> int:
             backend_router=backend_router,
             subscriptions=subscriptions,
             telegram_files=TelegramFileService(),
+            bot_username=me.username or "",
         )
         dispatcher = Dispatcher()
         dispatcher.update.outer_middleware(DatabaseUserMiddleware(database))

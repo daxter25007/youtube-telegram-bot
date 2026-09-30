@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from aiogram.exceptions import TelegramNetworkError
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.methods import SendMessage
 
 from app.database.base import Base
 from app.database.models import DownloadStatus, User
 from app.database.repositories.downloads import DownloadRepository
+from app.database.repositories.media_cache import MediaCacheRepository
 from app.database.session import Database
 from app.services.cleanup import TempStorage
-from app.services.download_manager import DownloadManager
+from app.services.download_manager import DownloadManager, format_video_caption
 from app.services.media.backends.base import (
     BackendError,
     BackendErrorKind,
@@ -27,6 +29,7 @@ from app.services.media.models import (
     MediaPackage,
     MediaSource,
 )
+from app.services.telegram_files import UploadResult
 
 
 class FakeMessage:
@@ -36,6 +39,9 @@ class FakeMessage:
     async def edit_text(self, text: str) -> None:
         self.texts.append(text)
 
+    async def delete(self) -> None:
+        self.texts.append("__deleted__")
+
 
 class FakeSubscriptions:
     async def missing_channels(self, bot, user_id, channels):
@@ -44,7 +50,57 @@ class FakeSubscriptions:
 
 class FakeTelegramFiles:
     async def send(self, bot, **kwargs):
-        return None
+        return UploadResult(
+            message=SimpleNamespace(
+                video=SimpleNamespace(
+                    file_id="telegram-file-id",
+                    file_unique_id="telegram-unique-id",
+                ),
+                document=None,
+            ),
+            sent_as_document=False,
+        )
+
+
+class CachingTelegramFiles:
+    async def send(self, bot, **kwargs):
+        return UploadResult(
+            message=SimpleNamespace(
+                video=SimpleNamespace(
+                    file_id="telegram-file-id",
+                    file_unique_id="telegram-unique-id",
+                ),
+                document=None,
+            ),
+            sent_as_document=False,
+        )
+
+
+class CachedDeliveryTelegramFiles:
+    def __init__(self) -> None:
+        self.file_id: str | None = None
+        self.sent_as_document: bool | None = None
+
+    async def send_cached(self, bot, *, file_id, sent_as_document, **kwargs):
+        self.file_id = file_id
+        self.sent_as_document = sent_as_document
+        return SimpleNamespace()
+
+
+class InvalidCachedDeliveryTelegramFiles:
+    async def send_cached(self, bot, **kwargs):
+        raise TelegramBadRequest(
+            method=SendMessage(chat_id=1, text="cached"),
+            message="wrong file identifier",
+        )
+
+
+class UnrelatedBadRequestCachedDeliveryTelegramFiles:
+    async def send_cached(self, bot, **kwargs):
+        raise TelegramBadRequest(
+            method=SendMessage(chat_id=1, text="cached"),
+            message="chat not found",
+        )
 
 
 class FailingTelegramFiles:
@@ -151,6 +207,7 @@ async def run_case(
         backend_router=downloader,
         subscriptions=FakeSubscriptions(),  # type: ignore[arg-type]
         telegram_files=telegram_files or FakeTelegramFiles(),  # type: ignore[arg-type]
+        bot_username="MyVideoBot",
     )
     message = FakeMessage()
     await manager.run(
@@ -161,6 +218,7 @@ async def run_case(
         download_id=download_id,
         source_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         source=MediaSource.YOUTUBE,
+        source_media_id="dQw4w9WgXcQ",
         media_kind=MediaKind.VIDEO,
         option_key="video_360",
         policy=DownloadPolicy(format_selector="best[height<=360]"),
@@ -176,9 +234,261 @@ async def run_case(
 
 @pytest.mark.asyncio
 async def test_successful_cleanup(tmp_path: Path) -> None:
-    status, jobs, _ = await run_case(tmp_path, SuccessfulDownloader())
+    status, jobs, texts = await run_case(tmp_path, SuccessfulDownloader())
     assert status == DownloadStatus.COMPLETED
     assert jobs == []
+    assert texts[-1] == "__deleted__"
+
+
+@pytest.mark.asyncio
+async def test_successful_download_is_saved_to_media_cache(tmp_path: Path) -> None:
+    database, user_id, download_id = await make_database(tmp_path)
+    manager = DownloadManager(
+        database=database,
+        settings=settings(tmp_path),  # type: ignore[arg-type]
+        storage=TempStorage(tmp_path / "jobs"),
+        backend_router=SuccessfulDownloader(),  # type: ignore[arg-type]
+        subscriptions=FakeSubscriptions(),  # type: ignore[arg-type]
+        telegram_files=CachingTelegramFiles(),  # type: ignore[arg-type]
+        bot_username="MyVideoBot",
+    )
+
+    await manager.run(
+        bot=object(),  # type: ignore[arg-type]
+        chat_id=123,
+        telegram_user_id=123,
+        user_id=user_id,
+        download_id=download_id,
+        source_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        source=MediaSource.YOUTUBE,
+        source_media_id="dQw4w9WgXcQ",
+        media_kind=MediaKind.VIDEO,
+        option_key="video_360",
+        policy=DownloadPolicy(format_selector="best[height<=360]"),
+        title="test",
+        progress_message=FakeMessage(),  # type: ignore[arg-type]
+    )
+
+    async with database.session() as session:
+        cached = await MediaCacheRepository(session).get(
+            source=MediaSource.YOUTUBE,
+            source_media_id="dQw4w9WgXcQ",
+            media_kind=MediaKind.VIDEO,
+            requested_option="video_360",
+        )
+    await database.close()
+
+    assert cached is not None
+    assert cached.telegram_file_id == "telegram-file-id"
+    assert cached.actual_quality == 360
+
+
+@pytest.mark.asyncio
+async def test_cached_download_is_delivered_and_recorded_without_backend(tmp_path: Path) -> None:
+    database, user_id, download_id = await make_database(tmp_path)
+    async with database.session() as session:
+        cached = await MediaCacheRepository(session).store(
+            source=MediaSource.YOUTUBE,
+            source_media_id="dQw4w9WgXcQ",
+            media_kind=MediaKind.VIDEO,
+            requested_option="video_360",
+            telegram_file_id="cached-file-id",
+            telegram_file_unique_id="cached-unique-id",
+            sent_as_document=False,
+            actual_quality=360,
+            file_size=1234,
+        )
+        cached.last_used_at = datetime(2000, 1, 1, tzinfo=UTC)
+    telegram_files = CachedDeliveryTelegramFiles()
+    manager = DownloadManager(
+        database=database,
+        settings=settings(tmp_path),  # type: ignore[arg-type]
+        storage=TempStorage(tmp_path / "jobs"),
+        backend_router=object(),  # type: ignore[arg-type]
+        subscriptions=FakeSubscriptions(),  # type: ignore[arg-type]
+        telegram_files=telegram_files,  # type: ignore[arg-type]
+        bot_username="MyVideoBot",
+    )
+    message = FakeMessage()
+
+    delivered = await manager.try_cached(
+        bot=object(),  # type: ignore[arg-type]
+        chat_id=123,
+        user_id=user_id,
+        download_id=download_id,
+        source=MediaSource.YOUTUBE,
+        source_media_id="dQw4w9WgXcQ",
+        media_kind=MediaKind.VIDEO,
+        option_key="video_360",
+        title="test",
+        source_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        progress_message=message,  # type: ignore[arg-type]
+    )
+
+    async with database.session() as session:
+        download = await DownloadRepository(session).get(download_id)
+        user = await session.get(User, user_id)
+        cached = await MediaCacheRepository(session).get(
+            source=MediaSource.YOUTUBE,
+            source_media_id="dQw4w9WgXcQ",
+            media_kind=MediaKind.VIDEO,
+            requested_option="video_360",
+        )
+    await database.close()
+
+    assert delivered is True
+    assert telegram_files.file_id == "cached-file-id"
+    assert download is not None
+    assert download.status is DownloadStatus.COMPLETED
+    assert download.cache_hit is True
+    assert user is not None and user.downloads_count == 1
+    assert cached is not None and cached.last_used_at.year > 2000
+    assert message.texts[-1] == "__deleted__"
+
+
+@pytest.mark.asyncio
+async def test_invalid_cached_file_is_removed_and_allows_normal_download(tmp_path: Path) -> None:
+    database, user_id, download_id = await make_database(tmp_path)
+    async with database.session() as session:
+        await MediaCacheRepository(session).store(
+            source=MediaSource.YOUTUBE,
+            source_media_id="dQw4w9WgXcQ",
+            media_kind=MediaKind.VIDEO,
+            requested_option="video_360",
+            telegram_file_id="invalid-file-id",
+            telegram_file_unique_id="invalid-unique-id",
+            sent_as_document=False,
+            actual_quality=360,
+            file_size=1234,
+        )
+    manager = DownloadManager(
+        database=database,
+        settings=settings(tmp_path),  # type: ignore[arg-type]
+        storage=TempStorage(tmp_path / "jobs"),
+        backend_router=object(),  # type: ignore[arg-type]
+        subscriptions=FakeSubscriptions(),  # type: ignore[arg-type]
+        telegram_files=InvalidCachedDeliveryTelegramFiles(),  # type: ignore[arg-type]
+        bot_username="MyVideoBot",
+    )
+
+    delivered = await manager.try_cached(
+        bot=object(),  # type: ignore[arg-type]
+        chat_id=123,
+        user_id=user_id,
+        download_id=download_id,
+        source=MediaSource.YOUTUBE,
+        source_media_id="dQw4w9WgXcQ",
+        media_kind=MediaKind.VIDEO,
+        option_key="video_360",
+        title="test",
+        source_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        progress_message=FakeMessage(),  # type: ignore[arg-type]
+    )
+
+    async with database.session() as session:
+        cached = await MediaCacheRepository(session).get(
+            source=MediaSource.YOUTUBE,
+            source_media_id="dQw4w9WgXcQ",
+            media_kind=MediaKind.VIDEO,
+            requested_option="video_360",
+        )
+    await database.close()
+
+    assert delivered is False
+    assert cached is None
+
+
+@pytest.mark.asyncio
+async def test_unrelated_bad_request_keeps_valid_cached_file(tmp_path: Path) -> None:
+    database, user_id, download_id = await make_database(tmp_path)
+    async with database.session() as session:
+        await MediaCacheRepository(session).store(
+            source=MediaSource.YOUTUBE,
+            source_media_id="dQw4w9WgXcQ",
+            media_kind=MediaKind.VIDEO,
+            requested_option="video_360",
+            telegram_file_id="valid-file-id",
+            telegram_file_unique_id="valid-unique-id",
+            sent_as_document=False,
+            actual_quality=360,
+            file_size=1234,
+        )
+    manager = DownloadManager(
+        database=database,
+        settings=settings(tmp_path),  # type: ignore[arg-type]
+        storage=TempStorage(tmp_path / "jobs"),
+        backend_router=object(),  # type: ignore[arg-type]
+        subscriptions=FakeSubscriptions(),  # type: ignore[arg-type]
+        telegram_files=UnrelatedBadRequestCachedDeliveryTelegramFiles(),  # type: ignore[arg-type]
+        bot_username="MyVideoBot",
+    )
+
+    with pytest.raises(TelegramBadRequest):
+        await manager.try_cached(
+            bot=object(),  # type: ignore[arg-type]
+            chat_id=123,
+            user_id=user_id,
+            download_id=download_id,
+            source=MediaSource.YOUTUBE,
+            source_media_id="dQw4w9WgXcQ",
+            media_kind=MediaKind.VIDEO,
+            option_key="video_360",
+            title="test",
+            source_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            progress_message=FakeMessage(),  # type: ignore[arg-type]
+        )
+
+    async with database.session() as session:
+        cached = await MediaCacheRepository(session).get(
+            source=MediaSource.YOUTUBE,
+            source_media_id="dQw4w9WgXcQ",
+            media_kind=MediaKind.VIDEO,
+            requested_option="video_360",
+        )
+    await database.close()
+
+    assert cached is not None
+
+
+def test_video_caption_matches_compact_youtube_template_and_escapes_html() -> None:
+    assert format_video_caption(
+        title="Cats & <Dogs>",
+        source_url="https://youtu.be/abc?x=1&y=2",
+        height=480,
+        bot_username="@MyVideoBot",
+    ) == (
+        "🍿 <code>Cats &amp; &lt;Dogs&gt;</code>\n\n"
+        '🔗 <a href="https://youtu.be/abc?x=1&amp;y=2">'
+        "https://youtu.be/abc?x=1&amp;y=2</a>\n\n"
+        "📺 480p\n\n"
+        '<a href="https://youtu.be/abc?x=1&amp;y=2">&#8203;</a>💙 @MyVideoBot'
+    )
+
+
+def test_video_caption_uses_same_template_for_tiktok_without_unknown_quality() -> None:
+    assert format_video_caption(
+        title="TikTok example",
+        source_url="https://www.tiktok.com/@creator/video/123",
+        height=None,
+        bot_username="MyVideoBot",
+    ) == (
+        "🍿 <code>TikTok example</code>\n\n"
+        '🔗 <a href="https://www.tiktok.com/@creator/video/123">'
+        "https://www.tiktok.com/@creator/video/123</a>\n\n"
+        '<a href="https://www.tiktok.com/@creator/video/123">&#8203;</a>💙 @MyVideoBot'
+    )
+
+
+def test_video_caption_truncates_non_bmp_title_to_telegram_utf16_limit() -> None:
+    caption = format_video_caption(
+        title="😀" * 512,
+        source_url="https://www.youtube.com/watch?v=abc123",
+        height=480,
+        bot_username="MyVideoBot",
+    )
+
+    assert f"<code>{'😀' * 475}…</code>" in caption
+    assert "😀" * 476 not in caption
 
 
 @pytest.mark.asyncio
