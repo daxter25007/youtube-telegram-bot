@@ -14,7 +14,7 @@ from aiohttp import ClientError, ClientSession, ClientTimeout, TCPConnector
 from aiohttp.abc import AbstractResolver
 
 from app.services.cobalt.client import CobaltClient, CobaltClientError, CobaltErrorKind
-from app.services.cobalt.models import CobaltMode, CobaltPreparedItem, CobaltResponseKind
+from app.services.cobalt.models import CobaltMode, CobaltPreparedItem
 from app.services.cobalt.security import (
     SafeRemoteUrlValidator,
     UnsafeRemoteUrlError,

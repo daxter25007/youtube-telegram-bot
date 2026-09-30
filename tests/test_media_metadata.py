@@ -66,7 +66,7 @@ def test_legacy_youtube_metadata_name_uses_shared_implementation() -> None:
     assert MetadataService is YtDlpMetadataService
 
 
-def test_tiktok_metadata_creates_automatic_best_video_option() -> None:
+def test_tiktok_metadata_creates_automatic_publication_bundle_option() -> None:
     parsed = MediaRegistry.default().parse(
         "https://www.tiktok.com/@creator/video/7461234567890123456"
     )
@@ -96,8 +96,8 @@ def test_tiktok_metadata_creates_automatic_best_video_option() -> None:
     assert metadata.media_id == "7461234567890123456"
     assert metadata.media_kind is MediaKind.VIDEO
     assert len(metadata.options) == 1
-    assert metadata.options[0].key == "best_video"
-    assert metadata.options[0].label == "Лучшее качество"
+    assert metadata.options[0].key == "tiktok_bundle"
+    assert metadata.options[0].label == "Скачать публикацию"
     assert metadata.options[0].height == 1024
     assert metadata.options[0].estimated_size == 900
 
@@ -203,4 +203,4 @@ async def test_metadata_service_returns_adapter_metadata(monkeypatch: pytest.Mon
     metadata = await service.fetch(parsed)
 
     assert metadata.title == "From process"
-    assert metadata.options[0].key == "best_video"
+    assert metadata.options[0].key == "tiktok_bundle"

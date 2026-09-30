@@ -20,14 +20,15 @@ from app.services.media.models import (
 TIKTOK_CANONICAL_HOSTS = frozenset({"tiktok.com", "www.tiktok.com", "m.tiktok.com"})
 TIKTOK_SHORT_HOSTS = frozenset({"vm.tiktok.com", "vt.tiktok.com"})
 CANONICAL_PATH_RE = re.compile(
-    r"^/@(?P<account>[A-Za-z0-9._-]{1,64})/video/(?P<media_id>[0-9]{6,32})/?$"
+    r"^/@(?P<account>[A-Za-z0-9._-]{1,64})/(?P<kind>video|photo)/"
+    r"(?P<media_id>[0-9]{6,32})/?$"
 )
 SHORT_PATH_RE = re.compile(r"^/[A-Za-z0-9_-]{4,128}/?$")
 
 
 class TikTokAdapter:
     source = MediaSource.TIKTOK
-    automatic_option = "best_video"
+    automatic_option = "tiktok_bundle"
 
     def initial_metadata(self, parsed: ParsedMediaUrl) -> MediaMetadata:
         media_id = parsed.media_id
@@ -38,14 +39,14 @@ class TikTokAdapter:
             source=self.source,
             media_id=media_id,
             source_url=parsed.normalized_url,
-            title="TikTok video",
+            title="TikTok publication",
             duration=None,
             thumbnail=None,
             media_kind=MediaKind.VIDEO,
             options=(
                 DownloadOption(
                     key=self.automatic_option,
-                    label="Лучшее качество",
+                    label="Скачать публикацию",
                     media_kind=MediaKind.VIDEO,
                 ),
             ),
@@ -70,10 +71,11 @@ class TikTokAdapter:
         if match is None:
             return None
         account = match.group("account")
+        content_kind = match.group("kind")
         media_id = match.group("media_id")
         return ParsedMediaUrl(
             source=self.source,
-            normalized_url=f"https://www.tiktok.com/@{account}/video/{media_id}",
+            normalized_url=f"https://www.tiktok.com/@{account}/{content_kind}/{media_id}",
             media_id=media_id,
         )
 
@@ -103,8 +105,8 @@ class TikTokAdapter:
             )
         height = int(chosen["height"]) if chosen.get("height") else None
         option = DownloadOption(
-            key="best_video",
-            label="Лучшее качество",
+            key=self.automatic_option,
+            label="Скачать публикацию",
             media_kind=MediaKind.VIDEO,
             height=height,
             estimated_size=estimated_size,

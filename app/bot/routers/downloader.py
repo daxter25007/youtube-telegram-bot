@@ -103,19 +103,31 @@ async def _enqueue_option(
     await DownloadRequestRepository(session).delete(request.id)
     await session.commit()
     try:
-        delivered_from_cache = await download_manager.try_cached(
-            bot=bot,
-            chat_id=progress_message.chat.id,
-            user_id=request.user_id,
-            download_id=download.id,
-            source=request.source,
-            source_media_id=request.source_media_id,
-            media_kind=option.media_kind,
-            option_key=option.key,
-            title=title,
-            source_url=request.source_url,
-            progress_message=progress_message,
-        )
+        if request.source is MediaSource.TIKTOK:
+            delivered_from_cache = await download_manager.try_cached_publication(
+                bot=bot,
+                chat_id=progress_message.chat.id,
+                user_id=request.user_id,
+                download_id=download.id,
+                source_media_id=request.source_media_id,
+                title=title,
+                source_url=request.source_url,
+                progress_message=progress_message,
+            )
+        else:
+            delivered_from_cache = await download_manager.try_cached(
+                bot=bot,
+                chat_id=progress_message.chat.id,
+                user_id=request.user_id,
+                download_id=download.id,
+                source=request.source,
+                source_media_id=request.source_media_id,
+                media_kind=option.media_kind,
+                option_key=option.key,
+                title=title,
+                source_url=request.source_url,
+                progress_message=progress_message,
+            )
     except TelegramAPIError:
         logger.exception("Telegram cache delivery failed for download_id=%s", download.id)
         await _set_download_status(
@@ -214,7 +226,7 @@ async def receive_url(
         return
     parsed = media_registry.parse(message.text)
     if parsed is None:
-        await message.answer("❌ Отправьте корректную ссылку на видео YouTube или TikTok.")
+        await message.answer("❌ Отправьте корректную ссылку YouTube или TikTok.")
         return
     if not is_admin(message.from_user.id, settings.admin_ids) and not await rate_limiter.allow(
         message.from_user.id

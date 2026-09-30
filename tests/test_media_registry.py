@@ -32,6 +32,7 @@ def test_registry_parses_youtube_urls(registry: MediaRegistry, url: str, video_i
         ("https://www.tiktok.com/@creator/video/7461234567890123456", "7461234567890123456"),
         ("https://m.tiktok.com/@creator/video/7461234567890123456?lang=ru", "7461234567890123456"),
         ("https://tiktok.com/@creator/video/7461234567890123456", "7461234567890123456"),
+        ("https://www.tiktok.com/@creator/photo/7461234567890123456", "7461234567890123456"),
         ("https://vm.tiktok.com/ZM123abc/", None),
         ("https://vt.tiktok.com/ZS123abc/", None),
     ],
@@ -45,7 +46,10 @@ def test_registry_parses_tiktok_video_urls(
     assert parsed.source is MediaSource.TIKTOK
     assert parsed.media_id == media_id
     if media_id:
-        assert parsed.normalized_url == (f"https://www.tiktok.com/@creator/video/{media_id}")
+        content_kind = "photo" if "/photo/" in url else "video"
+        assert parsed.normalized_url == (
+            f"https://www.tiktok.com/@creator/{content_kind}/{media_id}"
+        )
     else:
         assert parsed.normalized_url == url
 

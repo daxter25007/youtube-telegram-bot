@@ -82,7 +82,8 @@ class YouTubeAdapter:
             )
             for quality in qualities
         )
-        options = video_options + (
+        options = (
+            *video_options,
             DownloadOption(
                 key="audio_m4a",
                 label="🎵 Только аудио",

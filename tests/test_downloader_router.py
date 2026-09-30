@@ -124,12 +124,20 @@ class FakeCachedDownloadManager:
         self.calls += 1
         return True
 
+    async def try_cached_publication(self, **kwargs):
+        self.calls += 1
+        return True
+
 
 class FakeCacheMissDownloadManager:
     def __init__(self) -> None:
         self.cache_kwargs: dict[str, object] = {}
 
     async def try_cached(self, **kwargs):
+        self.cache_kwargs = kwargs
+        return False
+
+    async def try_cached_publication(self, **kwargs):
         self.cache_kwargs = kwargs
         return False
 
@@ -415,7 +423,7 @@ async def test_tiktok_link_is_automatically_submitted_to_queue(session_and_user)
     download = await session.scalar(select(Download))
     assert download is not None
     assert download.source is MediaSource.TIKTOK
-    assert download.requested_option == "best_video"
+    assert download.requested_option == "tiktok_bundle"
     assert download.requested_quality is None
     assert await session.scalar(select(DownloadRequest)) is None
     assert metadata_service.calls == []
@@ -444,3 +452,28 @@ async def test_tiktok_short_link_gets_stable_internal_media_id(session_and_user)
     assert download is not None
     assert download.source_media_id.startswith("url_")
     assert len(download.source_media_id) == 36
+
+
+@pytest.mark.asyncio
+async def test_tiktok_complete_bundle_cache_bypasses_queue(session_and_user) -> None:
+    session, user = session_and_user
+    message = FakeIncomingMessage("https://www.tiktok.com/@creator/photo/7461234567890123456")
+    queue = FakeQueue()
+    manager = FakeCachedDownloadManager()
+
+    await receive_url(
+        message=message,  # type: ignore[arg-type]
+        bot=object(),  # type: ignore[arg-type]
+        session=session,
+        db_user=user,
+        settings=settings(),  # type: ignore[arg-type]
+        media_registry=MediaRegistry.default(),
+        metadata_service=FakeMetadataService(),  # type: ignore[arg-type]
+        rate_limiter=FakeRateLimiter(),  # type: ignore[arg-type]
+        subscription_service=FakeSubscriptions(),  # type: ignore[arg-type]
+        download_queue=queue,  # type: ignore[arg-type]
+        download_manager=manager,  # type: ignore[arg-type]
+    )
+
+    assert manager.calls == 1
+    assert queue.submissions == []
