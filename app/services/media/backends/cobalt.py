@@ -29,7 +29,13 @@ from app.services.media.backends.base import (
     PreparedMedia,
 )
 from app.services.media.downloader import ProgressCallback
-from app.services.media.models import MediaArtifact, MediaKind, MediaPackage, MediaPart
+from app.services.media.models import (
+    MediaArtifact,
+    MediaKind,
+    MediaPackage,
+    MediaPart,
+    MediaSource,
+)
 from app.services.media.probe import probe_media
 
 CHUNK_SIZE = 1024 * 1024
@@ -140,11 +146,12 @@ class CobaltBackend:
         self.max_upload_bytes = max_upload_bytes
 
     async def prepare(self, request: MediaDownloadRequest) -> PreparedMedia:
+        tiktok_full_audio = request.source is MediaSource.TIKTOK
         try:
             visual = await self.client.prepare(
                 request.url,
                 mode=CobaltMode.AUTO,
-                tiktok_full_audio=True,
+                tiktok_full_audio=tiktok_full_audio,
             )
         except CobaltClientError as exc:
             kind = {
@@ -153,6 +160,17 @@ class CobaltBackend:
             }.get(exc.kind, BackendErrorKind.RETRYABLE)
             raise BackendError("Cobalt не подготовил публикацию", kind=kind) from exc
 
+        if (
+            request.source is MediaSource.INSTAGRAM
+            and "/reel/" in request.url
+            and visual.items
+            and all(item.media_kind is MediaKind.PHOTO for item in visual.items)
+        ):
+            raise BackendError(
+                "Cobalt вернул только обложку Instagram Reel",
+                kind=BackendErrorKind.RETRYABLE,
+            )
+
         items = list(visual.items)
         preparation_failures: list[MediaPartFailure] = []
         if not any(item.media_kind is MediaKind.AUDIO for item in items):
@@ -160,9 +178,29 @@ class CobaltBackend:
                 audio = await self.client.prepare(
                     request.url,
                     mode=CobaltMode.AUDIO,
-                    tiktok_full_audio=True,
+                    tiktok_full_audio=tiktok_full_audio,
                 )
-                items.extend(audio.items)
+                audio_items = [item for item in audio.items if item.media_kind is MediaKind.AUDIO]
+                if audio_items:
+                    items.extend(audio_items)
+                else:
+                    preparation_failures.append(
+                        MediaPartFailure(
+                            part_key="audio",
+                            media_kind=MediaKind.AUDIO,
+                            error_kind=BackendErrorKind.UNSUPPORTED,
+                        )
+                    )
+                    items.append(
+                        CobaltPreparedItem(
+                            part_key="audio",
+                            media_kind=MediaKind.AUDIO,
+                            position=len(items),
+                            url="",
+                            filename="audio",
+                            response_kind=items[0].response_kind,
+                        )
+                    )
             except CobaltClientError as exc:
                 kind = {
                     CobaltErrorKind.UNSUPPORTED: BackendErrorKind.UNSUPPORTED,

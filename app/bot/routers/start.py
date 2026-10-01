@@ -18,14 +18,15 @@ from app.utils.auth import is_admin
 router = Router(name="start")
 
 WELCOME_TEXT = (
-    "💙 <b>Привет! Я помогу скачать видео с YouTube и TikTok.</b>\n\n"
+    "💙 <b>Привет! Я помогу скачать медиа с YouTube, TikTok и Instagram.</b>\n\n"
     "💻 <b>Как пользоваться:</b>\n"
-    "1. Откройте нужное видео на YouTube или TikTok.\n"
+    "1. Откройте нужное видео или публикацию.\n"
     "2. Нажмите «Поделиться» → «Копировать ссылку».\n"
     "3. Отправьте ссылку этому боту.\n"
     "4. Выберите доступное качество.\n"
     "5. Дождитесь готового файла.\n\n"
-    "🔗 <b>Поддерживаются:</b> YouTube, Shorts и публичные видео TikTok.\n\n"
+    "🔗 <b>Поддерживаются:</b> YouTube, Shorts, публичные публикации TikTok, "
+    "Instagram Reels и посты.\n\n"
     "Просто отправьте ссылку в чат 👇"
 )
 
@@ -94,4 +95,4 @@ async def check_subscription(
         return
     await callback.answer("Подписка подтверждена!")
     if isinstance(callback.message, Message):
-        await callback.message.edit_text("✅ Подписка подтверждена. Отправьте ссылку на YouTube.")
+        await callback.message.edit_text("✅ Подписка подтверждена. Отправьте ссылку на медиа.")

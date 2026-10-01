@@ -6,7 +6,6 @@ import logging
 import os
 import time
 from pathlib import Path
-from urllib.parse import quote
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
@@ -42,12 +41,13 @@ from app.services.subscriptions import SubscriptionService
 from app.services.telegram_files import (
     InvalidCachedPartError,
     TelegramFileService,
-    TelegramPhotoInput,
+    TelegramMediaInput,
     UploadResult,
 )
 from app.utils.filesize import is_too_large
 
 logger = logging.getLogger(__name__)
+PUBLICATION_SOURCES = frozenset({MediaSource.TIKTOK, MediaSource.INSTAGRAM})
 TELEGRAM_CAPTION_MAX_UTF16 = 1024
 INVALID_CACHED_FILE_MARKERS = (
     "wrong file identifier",
@@ -247,6 +247,7 @@ class DownloadManager:
         chat_id: int,
         user_id: int,
         download_id: int,
+        source: MediaSource = MediaSource.TIKTOK,
         source_media_id: str,
         title: str,
         source_url: str,
@@ -255,7 +256,7 @@ class DownloadManager:
         started = time.monotonic()
         async with self.database.session() as session:
             manifest = await MediaManifestRepository(session).get(
-                source=MediaSource.TIKTOK,
+                source=source,
                 source_media_id=source_media_id,
             )
             if manifest is None:
@@ -263,7 +264,7 @@ class DownloadManager:
             parts = manifest.parts
             identities = {(part.media_kind, part.key) for part in parts}
             cached = await MediaCacheRepository(session).get_many(
-                source=MediaSource.TIKTOK,
+                source=source,
                 source_media_id=source_media_id,
                 identities=identities,
             )
@@ -376,21 +377,31 @@ class DownloadManager:
                     nonlocal prepared_parts, cached_parts
                     async with self.database.session() as session:
                         manifest = None
-                        if source is MediaSource.TIKTOK:
+                        if source in PUBLICATION_SOURCES:
                             manifest_repository = MediaManifestRepository(session)
                             manifest = await manifest_repository.get(
                                 source=source, source_media_id=source_media_id
                             )
-                        known_photo_manifest = bool(
-                            manifest
-                            and any(part.media_kind is MediaKind.PHOTO for part in manifest.parts)
-                            and not any(
-                                part.media_kind is MediaKind.PHOTO for part in prepared.parts
-                            )
+                        manifest_visuals = (
+                            [
+                                part
+                                for part in manifest.parts
+                                if part.media_kind in {MediaKind.PHOTO, MediaKind.VIDEO}
+                            ]
+                            if manifest
+                            else []
                         )
-                        prepared_parts = manifest.parts if known_photo_manifest else prepared.parts
+                        prepared_visuals = [
+                            part
+                            for part in prepared.parts
+                            if part.media_kind in {MediaKind.PHOTO, MediaKind.VIDEO}
+                        ]
+                        known_richer_manifest = bool(
+                            manifest and len(manifest_visuals) > len(prepared_visuals)
+                        )
+                        prepared_parts = manifest.parts if known_richer_manifest else prepared.parts
                         identities = {(part.media_kind, part.key) for part in prepared_parts}
-                        if source is MediaSource.TIKTOK and not known_photo_manifest:
+                        if source in PUBLICATION_SOURCES and not known_richer_manifest:
                             await MediaManifestRepository(session).upsert(
                                 source=source,
                                 source_media_id=source_media_id,
@@ -666,71 +677,75 @@ class DownloadManager:
         results: list[UploadResult] = []
         failures: list[MediaPartFailure] = []
         ordered = tuple(sorted(parts, key=lambda part: part.position))
+        visual_inputs: list[TelegramMediaInput] = []
         for part in ordered:
-            if part.media_kind is not MediaKind.VIDEO:
+            if part.media_kind not in {MediaKind.PHOTO, MediaKind.VIDEO}:
                 continue
             cached_item = cached.get((part.media_kind, part.key))
-            try:
-                if cached_item is not None:
-                    results.append(
-                        await self.telegram_files.send_cached(
-                            bot,
-                            chat_id=chat_id,
-                            part_key=part.key,
-                            media_kind=part.media_kind,
-                            file_id=cached_item.telegram_file_id,  # type: ignore[attr-defined]
-                            sent_as_document=cached_item.sent_as_document,  # type: ignore[attr-defined]
-                            caption=caption,
-                        )
-                    )
-                elif part.key in artifacts:
-                    results.extend(
-                        await self.telegram_files.send_artifacts(
-                            bot,
-                            chat_id=chat_id,
-                            package=MediaPackage(artifacts=(artifacts[part.key],)),
-                            caption=caption,
-                        )
-                    )
-            except TelegramAPIError:
-                if not continue_on_error:
-                    raise
-                failures.append(
-                    MediaPartFailure(part.key, part.media_kind, BackendErrorKind.RETRYABLE)
-                )
-        photo_parts = [part for part in ordered if part.media_kind is MediaKind.PHOTO]
-        photo_inputs: list[TelegramPhotoInput] = []
-        for part in photo_parts:
-            cached_item = cached.get((part.media_kind, part.key))
             if cached_item is not None:
-                photo_inputs.append(
-                    TelegramPhotoInput(
+                visual_inputs.append(
+                    TelegramMediaInput(
                         part_key=part.key,
                         media=cached_item.telegram_file_id,  # type: ignore[attr-defined]
+                        media_kind=part.media_kind,
                         cached=True,
                     )
                 )
             elif artifact := artifacts.get(part.key):
-                photo_inputs.append(
-                    TelegramPhotoInput(
+                visual_inputs.append(
+                    TelegramMediaInput(
                         part_key=part.key,
-                        media=f"file://{quote(artifact.path.as_posix(), safe='/')}",
+                        media=artifact.path.as_uri(),
+                        media_kind=part.media_kind,
+                        duration=artifact.duration,
+                        width=artifact.width,
+                        height=artifact.height,
                     )
                 )
-        for start in range(0, len(photo_inputs), 10):
-            batch = photo_inputs[start : start + 10]
+        caption_available = bool(caption)
+        for start in range(0, len(visual_inputs), 10):
+            batch = visual_inputs[start : start + 10]
             try:
-                results.extend(
-                    await self.telegram_files.send_photo_album(
-                        bot, chat_id=chat_id, photos=batch, caption=caption if start == 0 else ""
+                if len(batch) == 1:
+                    item = batch[0]
+                    cached_item = cached.get((item.media_kind, item.part_key))
+                    if cached_item is not None:
+                        results.append(
+                            await self.telegram_files.send_cached(
+                                bot,
+                                chat_id=chat_id,
+                                part_key=item.part_key,
+                                media_kind=item.media_kind,
+                                file_id=cached_item.telegram_file_id,  # type: ignore[attr-defined]
+                                sent_as_document=cached_item.sent_as_document,  # type: ignore[attr-defined]
+                                caption=caption if caption_available else "",
+                            )
+                        )
+                    elif item.part_key in artifacts:
+                        results.extend(
+                            await self.telegram_files.send_artifacts(
+                                bot,
+                                chat_id=chat_id,
+                                package=MediaPackage(artifacts=(artifacts[item.part_key],)),
+                                caption=caption if caption_available else "",
+                            )
+                        )
+                else:
+                    results.extend(
+                        await self.telegram_files.send_media_album(
+                            bot,
+                            chat_id=chat_id,
+                            media=batch,
+                            caption=caption if caption_available else "",
+                        )
                     )
-                )
+                caption_available = False
             except TelegramAPIError:
                 if not continue_on_error:
                     raise
                 failures.extend(
-                    MediaPartFailure(photo.part_key, MediaKind.PHOTO, BackendErrorKind.RETRYABLE)
-                    for photo in batch
+                    MediaPartFailure(item.part_key, item.media_kind, BackendErrorKind.RETRYABLE)
+                    for item in batch
                 )
         for part in ordered:
             if part.media_kind is not MediaKind.AUDIO:
@@ -746,7 +761,7 @@ class DownloadManager:
                             media_kind=part.media_kind,
                             file_id=cached_item.telegram_file_id,  # type: ignore[attr-defined]
                             sent_as_document=cached_item.sent_as_document,  # type: ignore[attr-defined]
-                            caption=caption,
+                            caption=caption if caption_available else "",
                         )
                     )
                 elif part.key in artifacts:
@@ -755,9 +770,10 @@ class DownloadManager:
                             bot,
                             chat_id=chat_id,
                             package=MediaPackage(artifacts=(artifacts[part.key],)),
-                            caption=caption,
+                            caption=caption if caption_available else "",
                         )
                     )
+                caption_available = False
             except TelegramAPIError:
                 if not continue_on_error:
                     raise

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Protocol
 
 from aiohttp import ClientError, ClientTimeout
@@ -111,6 +112,7 @@ class CobaltClient:
                 )
             items: list[CobaltPreparedItem] = []
             photo_index = 0
+            video_index = 0
             for raw_item in picker:
                 if not isinstance(raw_item, dict):
                     continue
@@ -124,8 +126,9 @@ class CobaltClient:
                     photo_index += 1
                     fallback_name = f"{part_key}.jpg"
                 else:
-                    part_key = "video"
-                    fallback_name = "video.mp4"
+                    part_key = f"video_{video_index:03d}"
+                    video_index += 1
+                    fallback_name = f"{part_key}.mp4"
                 items.append(
                     CobaltPreparedItem(
                         part_key=part_key,
@@ -163,16 +166,33 @@ class CobaltClient:
                     kind=CobaltErrorKind.RETRYABLE,
                 )
             response_kind = CobaltResponseKind(str(status))
-            media_kind = MediaKind.AUDIO if mode is CobaltMode.AUDIO else MediaKind.VIDEO
-            part_key = media_kind.value
-            fallback_name = "audio" if media_kind is MediaKind.AUDIO else "video.mp4"
+            filename = str(payload.get("filename") or "")
+            if mode is CobaltMode.AUDIO:
+                media_kind = MediaKind.AUDIO
+                part_key = "audio"
+                fallback_name = "audio"
+            elif Path(filename).suffix.lower() in {
+                ".avif",
+                ".gif",
+                ".jpeg",
+                ".jpg",
+                ".png",
+                ".webp",
+            }:
+                media_kind = MediaKind.PHOTO
+                part_key = "photo_000"
+                fallback_name = "photo_000.jpg"
+            else:
+                media_kind = MediaKind.VIDEO
+                part_key = "video"
+                fallback_name = "video.mp4"
             items = [
                 CobaltPreparedItem(
                     part_key=part_key,
                     media_kind=media_kind,
                     position=0,
                     url=url_value,
-                    filename=str(payload.get("filename") or fallback_name),
+                    filename=filename or fallback_name,
                     response_kind=response_kind,
                     internal_origin=(
                         self.base_url if response_kind is CobaltResponseKind.TUNNEL else None

@@ -12,6 +12,8 @@ from app.services.media.backends.base import (
 from app.services.media.downloader import DownloadError, MediaDownloader, ProgressCallback
 from app.services.media.models import DownloadPolicy, MediaKind, MediaPackage, MediaPart
 
+BUNDLE_OPTIONS = frozenset({"tiktok_bundle", "instagram_bundle"})
+
 
 class YtDlpBackend:
     name = DownloadBackend.YTDLP
@@ -20,7 +22,7 @@ class YtDlpBackend:
         self.downloader = downloader
 
     async def prepare(self, request: MediaDownloadRequest) -> PreparedMedia:
-        if request.option_key == "tiktok_bundle":
+        if request.option_key in BUNDLE_OPTIONS:
             parts = (
                 MediaPart(key="video", media_kind=MediaKind.VIDEO, position=0),
                 MediaPart(key="audio", media_kind=MediaKind.AUDIO, position=1),
@@ -48,7 +50,7 @@ class YtDlpBackend:
             if part.key not in include_keys:
                 continue
             policy = prepared.request.policy
-            if prepared.request.option_key == "tiktok_bundle":
+            if prepared.request.option_key in BUNDLE_OPTIONS:
                 policy = (
                     DownloadPolicy(format_selector="best[ext=mp4]/best")
                     if part.media_kind is MediaKind.VIDEO

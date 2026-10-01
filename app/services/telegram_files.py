@@ -7,7 +7,7 @@ from urllib.parse import quote
 from aiogram import Bot
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import InputMediaPhoto, Message
+from aiogram.types import InputMediaPhoto, InputMediaVideo, Message
 
 from app.services.media.models import MediaArtifact, MediaKind, MediaPackage
 
@@ -17,6 +17,17 @@ class TelegramPhotoInput:
     part_key: str
     media: str
     cached: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramMediaInput:
+    part_key: str
+    media: str
+    media_kind: MediaKind
+    cached: bool = False
+    duration: int | None = None
+    width: int | None = None
+    height: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,44 +187,112 @@ class TelegramFileService:
         photos: Sequence[TelegramPhotoInput],
         caption: str,
     ) -> tuple[UploadResult, ...]:
+        return await self.send_media_album(
+            bot,
+            chat_id=chat_id,
+            media=tuple(
+                TelegramMediaInput(
+                    part_key=photo.part_key,
+                    media=photo.media,
+                    media_kind=MediaKind.PHOTO,
+                    cached=photo.cached,
+                )
+                for photo in photos
+            ),
+            caption=caption,
+        )
+
+    async def send_media_album(
+        self,
+        bot: Bot,
+        *,
+        chat_id: int,
+        media: Sequence[TelegramMediaInput],
+        caption: str,
+    ) -> tuple[UploadResult, ...]:
         results: list[UploadResult] = []
         caption_available = bool(caption)
-        for photo in photos:
-            if not photo.cached:
+        for item in media:
+            if item.media_kind not in {MediaKind.PHOTO, MediaKind.VIDEO}:
+                raise UnsupportedMediaPackageError("Альбом поддерживает только фото и видео")
+            if not item.cached:
                 continue
             try:
-                await bot.get_file(photo.media)
+                await bot.get_file(item.media)
             except TelegramBadRequest as error:
                 if _invalid_file_id(error):
-                    raise InvalidCachedPartError(photo.part_key) from error
+                    raise InvalidCachedPartError(item.part_key) from error
                 raise
-        for start in range(0, len(photos), 10):
-            batch = photos[start : start + 10]
+        for start in range(0, len(media), 10):
+            batch = media[start : start + 10]
             if len(batch) == 1:
-                message = await bot.send_photo(
-                    chat_id,
-                    photo=batch[0].media,
-                    caption=caption if caption_available else None,
-                    parse_mode=ParseMode.HTML,
-                )
+                item = batch[0]
+                if item.media_kind is MediaKind.PHOTO:
+                    message = await bot.send_photo(
+                        chat_id,
+                        photo=item.media,
+                        caption=caption if caption_available else None,
+                        parse_mode=ParseMode.HTML,
+                    )
+                    sent_as_document = False
+                else:
+                    try:
+                        message = await bot.send_video(
+                            chat_id,
+                            video=item.media,
+                            caption=caption if caption_available else None,
+                            parse_mode=ParseMode.HTML,
+                            duration=item.duration,
+                            width=item.width,
+                            height=item.height,
+                            supports_streaming=True,
+                        )
+                        sent_as_document = False
+                    except TelegramBadRequest as error:
+                        if item.cached and _invalid_file_id(error):
+                            raise InvalidCachedPartError(item.part_key) from error
+                        message = await bot.send_document(
+                            chat_id,
+                            document=item.media,
+                            caption=caption if caption_available else None,
+                            parse_mode=ParseMode.HTML,
+                        )
+                        sent_as_document = True
                 messages = [message]
             else:
-                media = [
-                    InputMediaPhoto(
-                        media=photo.media,
-                        caption=(caption if caption_available and index == 0 else None),
-                        parse_mode=(ParseMode.HTML if caption_available and index == 0 else None),
+                sent_as_document = False
+                telegram_media = [
+                    (
+                        InputMediaPhoto(
+                            media=item.media,
+                            caption=(caption if caption_available and index == 0 else None),
+                            parse_mode=(
+                                ParseMode.HTML if caption_available and index == 0 else None
+                            ),
+                        )
+                        if item.media_kind is MediaKind.PHOTO
+                        else InputMediaVideo(
+                            media=item.media,
+                            caption=(caption if caption_available and index == 0 else None),
+                            parse_mode=(
+                                ParseMode.HTML if caption_available and index == 0 else None
+                            ),
+                            duration=item.duration,
+                            width=item.width,
+                            height=item.height,
+                            supports_streaming=True,
+                        )
                     )
-                    for index, photo in enumerate(batch)
+                    for index, item in enumerate(batch)
                 ]
-                messages = await bot.send_media_group(chat_id, media=media)
-            for photo, message in zip(batch, messages, strict=True):
+                messages = await bot.send_media_group(chat_id, media=telegram_media)
+            for item, message in zip(batch, messages, strict=True):
                 results.append(
                     UploadResult(
-                        part_key=photo.part_key,
-                        media_kind=MediaKind.PHOTO,
+                        part_key=item.part_key,
+                        media_kind=item.media_kind,
                         message=message,
-                        sent_as_document=False,
+                        sent_as_document=sent_as_document,
                     )
                 )
             caption_available = False

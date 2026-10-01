@@ -37,7 +37,11 @@ def _authorized(user_id: int, settings: Settings) -> bool:
 
 
 def _download_summary_line(download: Download) -> str:
-    source = "YouTube" if download.source is MediaSource.YOUTUBE else "TikTok"
+    source = {
+        MediaSource.YOUTUBE: "YouTube",
+        MediaSource.TIKTOK: "TikTok",
+        MediaSource.INSTAGRAM: "Instagram",
+    }[download.source]
     if download.requested_quality is not None:
         option = f"{download.requested_quality}p"
     elif download.requested_option == "best_video":

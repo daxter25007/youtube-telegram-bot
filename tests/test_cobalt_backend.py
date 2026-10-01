@@ -10,7 +10,7 @@ from app.services.cobalt.models import (
     CobaltPreparedItem,
     CobaltResponseKind,
 )
-from app.services.media.backends.base import BackendErrorKind, MediaDownloadRequest
+from app.services.media.backends.base import BackendError, BackendErrorKind, MediaDownloadRequest
 from app.services.media.backends.cobalt import CobaltBackend
 from app.services.media.models import DownloadPolicy, MediaKind, MediaSource
 
@@ -103,6 +103,15 @@ def request() -> MediaDownloadRequest:
     )
 
 
+def instagram_request() -> MediaDownloadRequest:
+    return MediaDownloadRequest(
+        source=MediaSource.INSTAGRAM,
+        url="https://www.instagram.com/p/C9fdwM4PnBe/",
+        option_key="instagram_bundle",
+        policy=DownloadPolicy(format_selector="best"),
+    )
+
+
 async def ignore_progress(stage: str, percent: float | None) -> None:
     return None
 
@@ -152,6 +161,70 @@ async def test_prepare_reuses_picker_audio_without_second_request() -> None:
 
     assert [part.key for part in prepared.parts] == ["photo_000", "audio"]
     assert client.calls == [(CobaltMode.AUTO, True)]
+
+
+@pytest.mark.asyncio
+async def test_instagram_prepare_does_not_duplicate_visual_picker_as_audio() -> None:
+    visual = CobaltMediaResponse(
+        items=(
+            item("video_000", MediaKind.VIDEO, "https://cdn/1.mp4", "1.mp4", 0),
+            item("photo_000", MediaKind.PHOTO, "https://cdn/2.jpg", "2.jpg", 1),
+        )
+    )
+    repeated_picker = CobaltMediaResponse(
+        items=(
+            item("video_000", MediaKind.VIDEO, "https://cdn/1.mp4", "1.mp4", 0),
+            item("photo_000", MediaKind.PHOTO, "https://cdn/2.jpg", "2.jpg", 1),
+        )
+    )
+    client = FakeCobaltClient(visual, repeated_picker)
+    backend = CobaltBackend(
+        client=client,  # type: ignore[arg-type]
+        validator=FakeValidator(),  # type: ignore[arg-type]
+        opener=FakeOpener(),  # type: ignore[arg-type]
+        max_upload_bytes=100,
+    )
+
+    prepared = await backend.prepare(instagram_request())
+
+    assert [(part.key, part.media_kind) for part in prepared.parts] == [
+        ("video_000", MediaKind.VIDEO),
+        ("photo_000", MediaKind.PHOTO),
+        ("audio", MediaKind.AUDIO),
+    ]
+    assert [(failure.part_key, failure.error_kind) for failure in prepared.failures] == [
+        ("audio", BackendErrorKind.UNSUPPORTED)
+    ]
+    assert client.calls == [(CobaltMode.AUTO, False), (CobaltMode.AUDIO, False)]
+
+
+@pytest.mark.asyncio
+async def test_instagram_reel_cover_only_response_triggers_fallback() -> None:
+    visual = CobaltMediaResponse(
+        items=(item("photo_000", MediaKind.PHOTO, "https://cdn/cover.jpg", "cover.jpg", 0),)
+    )
+    client = FakeCobaltClient(
+        visual,
+        CobaltClientError("no audio", kind=CobaltErrorKind.RETRYABLE),  # type: ignore[arg-type]
+    )
+    backend = CobaltBackend(
+        client=client,  # type: ignore[arg-type]
+        validator=FakeValidator(),  # type: ignore[arg-type]
+        opener=FakeOpener(),  # type: ignore[arg-type]
+        max_upload_bytes=100,
+    )
+    request = MediaDownloadRequest(
+        source=MediaSource.INSTAGRAM,
+        url="https://www.instagram.com/reel/DQw4w9WgXcQ/",
+        option_key="instagram_bundle",
+        policy=DownloadPolicy(format_selector="best"),
+    )
+
+    with pytest.raises(BackendError) as raised:
+        await backend.prepare(request)
+
+    assert raised.value.kind is BackendErrorKind.RETRYABLE
+    assert client.calls == [(CobaltMode.AUTO, False)]
 
 
 @pytest.mark.asyncio

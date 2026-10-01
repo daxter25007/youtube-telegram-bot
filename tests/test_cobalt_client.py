@@ -121,6 +121,44 @@ async def test_client_preserves_ordered_photos_and_picker_audio() -> None:
 
 
 @pytest.mark.asyncio
+async def test_client_assigns_unique_keys_to_mixed_picker_videos() -> None:
+    client, _, _, _ = client_for(
+        {
+            "status": "picker",
+            "picker": [
+                {"type": "video", "url": "https://cdn.example/1.mp4"},
+                {"type": "photo", "url": "https://cdn.example/2.jpg"},
+                {"type": "video", "url": "https://cdn.example/3.mp4"},
+            ],
+        }
+    )
+
+    result = await client.prepare("https://www.instagram.com/p/C9fdwM4PnBe/", mode=CobaltMode.AUTO)
+
+    assert [(item.part_key, item.media_kind, item.position) for item in result.items] == [
+        ("video_000", MediaKind.VIDEO, 0),
+        ("photo_000", MediaKind.PHOTO, 1),
+        ("video_001", MediaKind.VIDEO, 2),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_client_recognizes_single_photo_response_from_filename() -> None:
+    client, _, _, _ = client_for(
+        {
+            "status": "redirect",
+            "url": "https://cdn.example/photo.jpg",
+            "filename": "instagram_C9fdwM4PnBe.jpg",
+        }
+    )
+
+    result = await client.prepare("https://www.instagram.com/p/C9fdwM4PnBe/", mode=CobaltMode.AUTO)
+
+    assert result.items[0].part_key == "photo_000"
+    assert result.items[0].media_kind is MediaKind.PHOTO
+
+
+@pytest.mark.asyncio
 async def test_audio_mode_requests_best_full_tiktok_audio() -> None:
     client, session, _, _ = client_for(
         {"status": "redirect", "url": "https://cdn.example/sound.opus", "filename": "sound.opus"}

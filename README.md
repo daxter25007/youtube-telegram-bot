@@ -1,6 +1,6 @@
-# YouTube + TikTok → Telegram Bot
+# YouTube + TikTok + Instagram → Telegram Bot
 
-Готовый к эксплуатации Telegram-бот на Python 3.12, который проверяет подписку на обязательные каналы, получает метаданные YouTube, скачивает медиа через `yt-dlp`, self-hosted Cobalt и `ffmpeg`, а затем отправляет его через локальный Telegram Bot API Server. Для YouTube пользователь выбирает качество видео или M4A-аудио. Для TikTok бот автоматически отправляет видео либо фото/карусель и отдельным сообщением прикреплённую аудиодорожку.
+Готовый к эксплуатации Telegram-бот на Python 3.12, который проверяет подписку на обязательные каналы, получает метаданные YouTube, скачивает медиа через `yt-dlp`, self-hosted Cobalt и `ffmpeg`, а затем отправляет его через локальный Telegram Bot API Server. Для YouTube пользователь выбирает качество видео или M4A-аудио. Для TikTok и Instagram бот автоматически отправляет видео, фото или карусель и отдельным сообщением доступную аудиодорожку.
 
 > Используйте загрузку только для контента, который вы вправе скачивать и распространять. Учитывайте правила исходной площадки, Telegram и законодательство вашей страны.
 
@@ -13,8 +13,8 @@ Telegram Local Bot API Server (--local, internal port 8081)
     ↓
 aiogram bot → PostgreSQL (users, requests, channels, statistics, backend результата)
     ├─ YouTube → yt-dlp → ffmpeg merge/remux
-    └─ TikTok → Cobalt (основной) ─┐
-                  └→ yt-dlp (fallback) ─┤
+    └─ TikTok / Instagram → Cobalt (основной) ─┐
+                              └→ yt-dlp (fallback) ─┤
                                         ↓
 /shared-temp/jobs/<uuid>/media.mp4
     ↓ shared Docker volume, local filesystem path
@@ -26,21 +26,22 @@ Telegram Local Bot API Server → Telegram user
 Сервисы Compose:
 
 - `bot` — aiogram 3.31, async SQLAlchemy, yt-dlp, ffmpeg, поддерживаемый Node 22 runtime для YouTube EJS challenges;
-- `cobalt` — отдельный self-hosted processing API для TikTok, закреплённый tag+digest, доступный только внутри Docker network;
+- `cobalt` — отдельный self-hosted processing API для TikTok и Instagram, закреплённый tag+digest, доступный только внутри Docker network;
 - `telegram-bot-api` — поддерживаемый образ `aiogram/telegram-bot-api`, собранный из официального `tdlib/telegram-bot-api`, режим local; multi-arch digest закреплён в Compose;
 - `postgres` — PostgreSQL 17.
 
-PostgreSQL, Local Bot API и Cobalt не публикуются на хост. Они доступны только внутри Docker network. Контейнер бота работает не от root. Недоступность Cobalt не блокирует запуск бота и YouTube: для TikTok менеджер автоматически попробует yt-dlp в рамках того же общего таймаута.
+PostgreSQL, Local Bot API и Cobalt не публикуются на хост. Они доступны только внутри Docker network. Контейнер бота работает не от root. Недоступность Cobalt не блокирует запуск бота и YouTube: для TikTok и Instagram менеджер автоматически попробует yt-dlp в рамках того же общего таймаута.
 
 ## Возможности
 
 - URL `youtube.com/watch`, `youtu.be`, `youtube.com/shorts` с жёстким whitelist хостов;
 - публичные TikTok-видео, фотографии и карусели по каноническим ссылкам и официальным коротким ссылкам `vm.tiktok.com` / `vt.tiktok.com`;
-- Cobalt как основной TikTok-backend с потоковой записью сразу на диск и yt-dlp как автоматический fallback;
-- расширяемый реестр адаптеров для будущего добавления Instagram, VK, RuTube, фото и аудио без изменения очереди и временного хранилища;
+- публичные Instagram Reels, одиночные публикации и смешанные фото/видео-карусели по ссылкам `/reel/`, `/reels/`, `/p/` и `/share/`;
+- Cobalt как основной TikTok/Instagram-backend с потоковой записью сразу на диск и yt-dlp как автоматический fallback;
+- расширяемый реестр адаптеров для будущего добавления VK, RuTube и других источников без изменения очереди и временного хранилища;
 - 144p, 240p, 360p, 480p, 720p, 1080p, 1440p, 2160p — только когда формат существует и оценочный размер не превышает лимит;
 - отдельная кнопка YouTube `Только аудио` с результатом M4A;
-- TikTok-карусели отправляются по порядку альбомами до 10 фотографий, а исходная аудиодорожка — отдельным сообщением;
+- TikTok и Instagram-карусели отправляются по порядку альбомами до 10 фото/видео, а доступная аудиодорожка — отдельным сообщением;
 - Telegram `file_id`-кэш для каждого видео, аудио и фото; повторный полный запрос не скачивает публикацию заново;
 - предпочтение MP4/H.264 + M4A/AAC, fallback на лучший совместимый video/audio без hardcoded format ID;
 - merge/remux через ffmpeg, `sendVideo` с `supports_streaming`, fallback на `sendDocument`;
@@ -165,6 +166,12 @@ Local Bot API официально поддерживает upload до 2000 MB 
 
 TikTok сначала обрабатывает Cobalt. Каждая часть публикации скачивается потоково в отдельный временный файл, проверяется по заголовку и фактическому числу байтов, затем атомарно переименовывается. Redirect URL повторно проверяются: credentials, private/local IP, нестандартные внешние порты и опасные схемы запрещены. Если Cobalt временно недоступен для видео/аудио, каталог очищается и тот же job автоматически пробует yt-dlp. Фотопубликации требуют Cobalt. Ошибка одной части не отменяет отправку остальных доступных файлов.
 
+### Ограничения Instagram
+
+Поддерживаются только публичные Reels и публикации: одиночные фото/видео и смешанные карусели. Stories и ссылки на профили не принимаются. Cobalt является основным backend; `yt-dlp` используется как fallback для одиночного видео и аудио. Полное восстановление карусели требует Cobalt.
+
+Элементы карусели получают независимые ключи, сохраняются и отправляются в исходном порядке. Если Cobalt предоставляет отдельную аудиодорожку, она отправляется после визуальных частей; отсутствие аудио не отменяет доставку доступных фото и видео.
+
 Для публикаций, требующих входа, yt-dlp можно позднее снабдить runtime cookies описанным ниже способом; cookies никогда не добавляются в Git или Docker image. Cobalt в текущей конфигурации рассчитан на публичные видео.
 
 ## Cookies (опционально)
@@ -190,7 +197,7 @@ services:
 - `RATE_LIMIT_URLS=5`, `RATE_LIMIT_WINDOW_SECONDS=60`;
 - `DOWNLOAD_REQUEST_TTL_MINUTES=30`;
 - `PROGRESS_UPDATE_SECONDS=3`.
-- `COBALT_ENABLED=true` — включить Cobalt как основной TikTok-backend;
+- `COBALT_ENABLED=true` — включить Cobalt как основной TikTok/Instagram-backend;
 - `COBALT_API_URL=http://cobalt:9000` — только внутренний origin Compose-сервиса;
 - `COBALT_REQUEST_TIMEOUT_SECONDS=30` — timeout получения download instruction;
 - `COBALT_STREAM_TIMEOUT_SECONDS=1800` — timeout потокового ответа Cobalt.

@@ -8,6 +8,7 @@ from pathlib import Path
 class MediaSource(StrEnum):
     YOUTUBE = "youtube"
     TIKTOK = "tiktok"
+    INSTAGRAM = "instagram"
 
 
 class MediaKind(StrEnum):

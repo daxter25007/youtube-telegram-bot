@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import InputMediaPhoto, InputMediaVideo
 
 from app.services.media.models import MediaArtifact, MediaKind, MediaPackage
 from app.services.telegram_files import TelegramFileService, TelegramPhotoInput, UploadResult
@@ -158,6 +159,56 @@ async def test_eleven_mixed_photos_keep_order_across_group_and_single() -> None:
     assert bot.calls[1][1] == photos[10].media
     assert bot.calls[1][2].get("caption") is None
     assert [result.part_key for result in results] == [photo.part_key for photo in photos]
+
+
+@pytest.mark.asyncio
+async def test_mixed_visual_album_preserves_photo_and_video_order() -> None:
+    bot = FakeBot()
+    service = TelegramFileService()
+    send_media_album = getattr(service, "send_media_album", None)
+    assert send_media_album is not None
+    media = (
+        SimpleNamespace(
+            part_key="photo_000",
+            media="file:///media/1.jpg",
+            media_kind=MediaKind.PHOTO,
+            cached=False,
+            duration=None,
+            width=None,
+            height=None,
+        ),
+        SimpleNamespace(
+            part_key="video_000",
+            media="file:///media/2.mp4",
+            media_kind=MediaKind.VIDEO,
+            cached=False,
+            duration=5,
+            width=720,
+            height=1280,
+        ),
+        SimpleNamespace(
+            part_key="photo_001",
+            media="cached-photo",
+            media_kind=MediaKind.PHOTO,
+            cached=True,
+            duration=None,
+            width=None,
+            height=None,
+        ),
+    )
+
+    results = await send_media_album(bot, chat_id=1, media=media, caption="carousel")
+
+    assert bot.calls[0][0] == "media_group"
+    sent = bot.calls[0][1]
+    assert [type(item) for item in sent] == [InputMediaPhoto, InputMediaVideo, InputMediaPhoto]
+    assert sent[0].caption == "carousel"
+    assert sent[1].media == "file:///media/2.mp4"
+    assert [result.part_key for result in results] == [
+        "photo_000",
+        "video_000",
+        "photo_001",
+    ]
 
 
 @pytest.mark.asyncio

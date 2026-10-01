@@ -132,7 +132,7 @@ async def run() -> int:
         subscriptions = SubscriptionService()
         media_registry = MediaRegistry.default()
         ytdlp_backend = YtDlpBackend(MediaDownloader(cookies))
-        tiktok_backends = [ytdlp_backend]
+        publication_backends = [ytdlp_backend]
         cobalt_client: CobaltClient | None = None
         if settings.cobalt_enabled:
             cobalt_http_session = ClientSession()
@@ -152,11 +152,12 @@ async def run() -> int:
                 ),
                 max_upload_bytes=settings.max_upload_bytes,
             )
-            tiktok_backends.insert(0, cobalt_backend)
+            publication_backends.insert(0, cobalt_backend)
         backend_router = MediaBackendRouter(
             {
                 MediaSource.YOUTUBE: (ytdlp_backend,),
-                MediaSource.TIKTOK: tuple(tiktok_backends),
+                MediaSource.TIKTOK: tuple(publication_backends),
+                MediaSource.INSTAGRAM: tuple(publication_backends),
             }
         )
         manager = DownloadManager(

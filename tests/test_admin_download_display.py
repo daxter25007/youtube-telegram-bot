@@ -21,6 +21,21 @@ def test_admin_download_summary_uses_tiktok_option_instead_of_none_quality() -> 
     assert _download_summary_line(download) == ("#7 TikTok · лучшее качество · cobalt — completed")
 
 
+def test_admin_download_summary_names_instagram_source() -> None:
+    download = SimpleNamespace(
+        id=8,
+        source=MediaSource.INSTAGRAM,
+        requested_option="instagram_bundle",
+        requested_quality=None,
+        status=DownloadStatus.COMPLETED,
+        backend=DownloadBackend.COBALT,
+    )
+
+    assert _download_summary_line(download) == (
+        "#8 Instagram · instagram bundle · cobalt — completed"
+    )
+
+
 class FakeCobaltClient:
     def __init__(self, healthy: bool) -> None:
         self.healthy = healthy

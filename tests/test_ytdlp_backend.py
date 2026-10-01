@@ -48,3 +48,27 @@ async def test_tiktok_audio_failure_keeps_downloaded_video(tmp_path: Path) -> No
     assert [(failure.part_key, failure.error_kind) for failure in package.failures] == [
         ("audio", BackendErrorKind.RETRYABLE)
     ]
+
+
+@pytest.mark.asyncio
+async def test_instagram_audio_failure_keeps_downloaded_video(tmp_path: Path) -> None:
+    backend = YtDlpBackend(PartialDownloader(tmp_path))  # type: ignore[arg-type]
+    request = MediaDownloadRequest(
+        source=MediaSource.INSTAGRAM,
+        url="https://www.instagram.com/reel/DQw4w9WgXcQ/",
+        option_key="instagram_bundle",
+        policy=DownloadPolicy(format_selector="best"),
+    )
+    prepared = await backend.prepare(request)
+
+    async def progress(stage: str, percent: float | None) -> None:
+        return None
+
+    package = await backend.download_prepared(
+        prepared, frozenset({"video", "audio"}), tmp_path, progress
+    )
+
+    assert [artifact.part_key for artifact in package.artifacts] == ["video"]
+    assert [(failure.part_key, failure.error_kind) for failure in package.failures] == [
+        ("audio", BackendErrorKind.RETRYABLE)
+    ]

@@ -88,9 +88,16 @@ class RecordingTelegramFiles:
             results.append(uploaded(photo.part_key, MediaKind.PHOTO))
         return tuple(results)
 
+    async def send_media_album(self, bot, *, media, **kwargs):
+        results = []
+        for item in media:
+            self.sent.append(item.part_key)
+            results.append(uploaded(item.part_key, item.media_kind))
+        return tuple(results)
+
 
 class InvalidPhotoTelegramFiles(RecordingTelegramFiles):
-    async def send_photo_album(self, bot, *, photos, **kwargs):
+    async def send_media_album(self, bot, *, media, **kwargs):
         raise InvalidCachedPartError("photo_001")
 
 
@@ -145,7 +152,13 @@ class RecordingRouter:
         )
 
 
-async def setup_database(tmp_path: Path):
+async def setup_database(
+    tmp_path: Path,
+    *,
+    source: MediaSource = MediaSource.TIKTOK,
+    source_url: str = "https://vm.tiktok.com/POST1/",
+    requested_option: str = "tiktok_bundle",
+):
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'bundle.db'}")
     async with database.engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -155,12 +168,12 @@ async def setup_database(tmp_path: Path):
         await session.flush()
         download = await DownloadRepository(session).create(
             user_id=user.id,
-            source=MediaSource.TIKTOK,
+            source=source,
             media_kind=MediaKind.VIDEO,
             source_media_id="post-1",
-            source_url="https://vm.tiktok.com/POST1/",
-            video_title="TikTok post",
-            requested_option="tiktok_bundle",
+            source_url=source_url,
+            video_title=f"{source.value} post",
+            requested_option=requested_option,
             requested_quality=None,
             status=DownloadStatus.QUEUED,
         )
@@ -187,9 +200,14 @@ def manager(database, tmp_path, router, telegram):
     )
 
 
-async def store_cache(session, part: MediaPart) -> None:
+async def store_cache(
+    session,
+    part: MediaPart,
+    *,
+    source: MediaSource = MediaSource.TIKTOK,
+) -> None:
     await MediaCacheRepository(session).store(
-        source=MediaSource.TIKTOK,
+        source=source,
         source_media_id="post-1",
         media_kind=part.media_kind,
         requested_option=part.key,
@@ -199,6 +217,81 @@ async def store_cache(session, part: MediaPart) -> None:
         actual_quality=None,
         file_size=10,
     )
+
+
+@pytest.mark.asyncio
+async def test_instagram_complete_manifest_cache_delivers_without_backend(tmp_path: Path) -> None:
+    parts = (
+        MediaPart(key="video", media_kind=MediaKind.VIDEO, position=0),
+        MediaPart(key="audio", media_kind=MediaKind.AUDIO, position=1),
+    )
+    database, user_id, download_id = await setup_database(
+        tmp_path,
+        source=MediaSource.INSTAGRAM,
+        source_url="https://www.instagram.com/reel/DQw4w9WgXcQ/",
+        requested_option="instagram_bundle",
+    )
+    async with database.session() as session:
+        await MediaManifestRepository(session).upsert(
+            source=MediaSource.INSTAGRAM, source_media_id="post-1", parts=parts
+        )
+        for part in parts:
+            await store_cache(session, part, source=MediaSource.INSTAGRAM)
+    telegram = RecordingTelegramFiles()
+    router = RecordingRouter(parts)
+
+    delivered = await manager(database, tmp_path, router, telegram).try_cached_publication(
+        bot=object(),  # type: ignore[arg-type]
+        chat_id=123,
+        user_id=user_id,
+        download_id=download_id,
+        source=MediaSource.INSTAGRAM,
+        source_media_id="post-1",
+        title="Instagram post",
+        source_url="https://www.instagram.com/reel/DQw4w9WgXcQ/",
+        progress_message=FakeMessage(),  # type: ignore[arg-type]
+    )
+
+    assert delivered is True
+    assert router.calls == 0
+    assert telegram.sent == ["video", "audio"]
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_mixed_carousel_delivery_preserves_visual_order(tmp_path: Path) -> None:
+    parts = (
+        MediaPart(key="photo_000", media_kind=MediaKind.PHOTO, position=0),
+        MediaPart(key="video_000", media_kind=MediaKind.VIDEO, position=1),
+        MediaPart(key="photo_001", media_kind=MediaKind.PHOTO, position=2),
+        MediaPart(key="audio", media_kind=MediaKind.AUDIO, position=3),
+    )
+    database, user_id, download_id = await setup_database(
+        tmp_path,
+        source=MediaSource.INSTAGRAM,
+        source_url="https://www.instagram.com/p/C9fdwM4PnBe/",
+        requested_option="instagram_bundle",
+    )
+    telegram = RecordingTelegramFiles()
+
+    await manager(database, tmp_path, RecordingRouter(parts), telegram).run(
+        bot=object(),  # type: ignore[arg-type]
+        chat_id=123,
+        telegram_user_id=123,
+        user_id=user_id,
+        download_id=download_id,
+        source_url="https://www.instagram.com/p/C9fdwM4PnBe/",
+        source=MediaSource.INSTAGRAM,
+        source_media_id="post-1",
+        media_kind=MediaKind.VIDEO,
+        option_key="instagram_bundle",
+        policy=DownloadPolicy(format_selector="best"),
+        title="Instagram post",
+        progress_message=FakeMessage(),  # type: ignore[arg-type]
+    )
+
+    assert telegram.sent == ["photo_000", "video_000", "photo_001", "audio"]
+    await database.close()
 
 
 @pytest.mark.asyncio

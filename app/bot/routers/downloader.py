@@ -29,6 +29,7 @@ from app.utils.filesize import format_duration
 
 logger = logging.getLogger(__name__)
 router = Router(name="downloader")
+PUBLICATION_SOURCES = frozenset({MediaSource.TIKTOK, MediaSource.INSTAGRAM})
 
 
 def _option_from_json(metadata: dict[str, Any], option_key: str) -> DownloadOption | None:
@@ -103,12 +104,13 @@ async def _enqueue_option(
     await DownloadRequestRepository(session).delete(request.id)
     await session.commit()
     try:
-        if request.source is MediaSource.TIKTOK:
+        if request.source in PUBLICATION_SOURCES:
             delivered_from_cache = await download_manager.try_cached_publication(
                 bot=bot,
                 chat_id=progress_message.chat.id,
                 user_id=request.user_id,
                 download_id=download.id,
+                source=request.source,
                 source_media_id=request.source_media_id,
                 title=title,
                 source_url=request.source_url,
@@ -226,7 +228,7 @@ async def receive_url(
         return
     parsed = media_registry.parse(message.text)
     if parsed is None:
-        await message.answer("❌ Отправьте корректную ссылку YouTube или TikTok.")
+        await message.answer("❌ Отправьте корректную ссылку YouTube, TikTok или Instagram.")
         return
     if not is_admin(message.from_user.id, settings.admin_ids) and not await rate_limiter.allow(
         message.from_user.id
