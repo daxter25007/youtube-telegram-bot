@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from aiohttp import ClientError, ClientTimeout
 
@@ -54,6 +54,7 @@ class CobaltClient:
         *,
         mode: CobaltMode = CobaltMode.AUTO,
         tiktok_full_audio: bool = False,
+        audio_format: Literal["best", "mp3"] = "best",
     ) -> CobaltMediaResponse:
         body: dict[str, object] = {
             "url": source_url,
@@ -63,7 +64,7 @@ class CobaltClient:
             "disableMetadata": False,
             "alwaysProxy": True,
             "localProcessing": "disabled",
-            "audioFormat": "best",
+            "audioFormat": audio_format,
             "tiktokFullAudio": tiktok_full_audio,
         }
         try:
@@ -78,8 +79,6 @@ class CobaltClient:
                 "Cobalt API недоступен", kind=CobaltErrorKind.RETRYABLE
             ) from exc
         try:
-            if response.status < 200 or response.status >= 300:
-                raise CobaltClientError("Cobalt API вернул ошибку", kind=CobaltErrorKind.RETRYABLE)
             try:
                 payload = await response.json(content_type=None)
             except (TypeError, ValueError, ClientError, OSError) as exc:
@@ -87,6 +86,13 @@ class CobaltClient:
                     "Cobalt API вернул некорректный JSON",
                     kind=CobaltErrorKind.RETRYABLE,
                 ) from exc
+            if response.status < 200 or response.status >= 300:
+                error_code = self._error_code(payload)
+                detail = f": {error_code}" if error_code else ""
+                raise CobaltClientError(
+                    f"Cobalt API вернул ошибку{detail}",
+                    kind=CobaltErrorKind.RETRYABLE,
+                )
             return await self._parse_payload(payload, mode=mode)
         finally:
             response.release()
@@ -203,7 +209,12 @@ class CobaltClient:
                 )
             ]
         elif status == "error":
-            raise CobaltClientError("Cobalt не получил видео", kind=CobaltErrorKind.RETRYABLE)
+            error_code = self._error_code(payload)
+            detail = f": {error_code}" if error_code else ""
+            raise CobaltClientError(
+                f"Cobalt не получил видео{detail}",
+                kind=CobaltErrorKind.RETRYABLE,
+            )
         elif status == "local-processing":
             raise CobaltClientError(
                 "Cobalt запросил неподдерживаемую локальную обработку",
@@ -231,6 +242,16 @@ class CobaltClient:
                     kind=CobaltErrorKind.RETRYABLE,
                 ) from exc
         return CobaltMediaResponse(items=tuple(items))
+
+    @staticmethod
+    def _error_code(payload: object) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        error = payload.get("error")
+        if not isinstance(error, dict):
+            return None
+        code = error.get("code")
+        return code if isinstance(code, str) and code else None
 
     async def healthcheck(self) -> bool:
         try:

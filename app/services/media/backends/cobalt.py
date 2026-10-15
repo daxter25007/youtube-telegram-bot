@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ipaddress
+import logging
 import re
 import socket
 from collections.abc import Mapping
@@ -41,6 +42,7 @@ from app.services.media.probe import probe_media
 CHUNK_SIZE = 1024 * 1024
 MAX_REDIRECTS = 5
 SAFE_SUFFIX_RE = re.compile(r"^\.[a-z0-9]{1,8}$")
+logger = logging.getLogger(__name__)
 
 
 class StreamContent(Protocol):
@@ -159,8 +161,21 @@ class CobaltBackend:
                     request.url,
                     mode=mode,
                     tiktok_full_audio=tiktok_full_audio,
+                    audio_format=(
+                        "mp3"
+                        if request.source is MediaSource.TIKTOK and mode is CobaltMode.AUDIO
+                        else "best"
+                    ),
                 )
             except CobaltClientError as exc:
+                logger.warning(
+                    "Cobalt preparation failed source=%s mode=%s attempt=%s/%s error=%s",
+                    request.source,
+                    mode,
+                    attempt + 1,
+                    attempts,
+                    exc,
+                )
                 if attempt + 1 == attempts or exc.kind is not CobaltErrorKind.RETRYABLE:
                     raise
         raise RuntimeError("unreachable")
@@ -303,6 +318,15 @@ class CobaltBackend:
             except BackendError as exc:
                 if exc.kind in {BackendErrorKind.SECURITY, BackendErrorKind.FILESYSTEM}:
                     raise
+                logger.warning(
+                    "Cobalt part download failed source=%s part=%s media_kind=%s "
+                    "error_kind=%s error=%s",
+                    prepared.request.source,
+                    item.part_key,
+                    item.media_kind,
+                    exc.kind,
+                    exc,
+                )
                 failures.append(
                     MediaPartFailure(
                         part_key=item.part_key,
@@ -388,6 +412,8 @@ class CobaltBackend:
             if content_type.startswith("text/") or content_type == "application/json":
                 raise BackendError("Cobalt вернул не медиа", kind=BackendErrorKind.RETRYABLE)
             declared_size = self._content_length(response.headers)
+            if declared_size == 0:
+                raise BackendError("Cobalt вернул пустой файл", kind=BackendErrorKind.RETRYABLE)
             if declared_size is not None and declared_size > self.max_upload_bytes:
                 raise BackendError("Cobalt media превышает лимит", kind=BackendErrorKind.TOO_LARGE)
             try:
@@ -413,6 +439,8 @@ class CobaltBackend:
                 raise BackendError(
                     "Cobalt stream прерван", kind=BackendErrorKind.RETRYABLE
                 ) from exc
+            if written == 0:
+                raise BackendError("Cobalt вернул пустой файл", kind=BackendErrorKind.RETRYABLE)
             await asyncio.to_thread(file_handle.close)
             file_handle = None
             await asyncio.to_thread(part_path.replace, final_path)

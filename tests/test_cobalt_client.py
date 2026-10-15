@@ -178,7 +178,7 @@ async def test_client_recognizes_single_gif_as_animation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_audio_mode_requests_best_full_tiktok_audio() -> None:
+async def test_audio_mode_supports_mp3_full_tiktok_audio() -> None:
     client, session, _, _ = client_for(
         {"status": "redirect", "url": "https://cdn.example/sound.opus", "filename": "sound.opus"}
     )
@@ -187,15 +187,31 @@ async def test_audio_mode_requests_best_full_tiktok_audio() -> None:
         "https://vm.tiktok.com/ABC123/",
         mode=CobaltMode.AUDIO,
         tiktok_full_audio=True,
+        audio_format="mp3",
     )
 
     body = session.posts[0][1]["json"]
     assert body["downloadMode"] == "audio"
-    assert body["audioFormat"] == "best"
+    assert body["audioFormat"] == "mp3"
     assert body["tiktokFullAudio"] is True
     assert result.items[0].part_key == "audio"
     assert result.items[0].media_kind is MediaKind.AUDIO
     assert result.items[0].filename == "sound.opus"
+
+
+@pytest.mark.asyncio
+async def test_client_preserves_cobalt_error_code_from_http_error() -> None:
+    client, _, _, response = client_for(
+        {"status": "error", "error": {"code": "error.api.fetch.empty"}},
+        status=400,
+    )
+
+    with pytest.raises(CobaltClientError) as raised:
+        await client.prepare("https://www.instagram.com/reel/PUBLIC/", mode=CobaltMode.AUTO)
+
+    assert raised.value.kind is CobaltErrorKind.RETRYABLE
+    assert "error.api.fetch.empty" in str(raised.value)
+    assert response.released is True
 
 
 @pytest.mark.asyncio

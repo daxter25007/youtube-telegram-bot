@@ -20,10 +20,17 @@ class FakeCobaltClient:
 
     def __init__(self, *responses: CobaltMediaResponse) -> None:
         self.responses = list(responses)
-        self.calls: list[tuple[CobaltMode, bool]] = []
+        self.calls: list[tuple[CobaltMode, bool, str]] = []
 
-    async def prepare(self, url: str, *, mode: CobaltMode, tiktok_full_audio: bool = False):
-        self.calls.append((mode, tiktok_full_audio))
+    async def prepare(
+        self,
+        url: str,
+        *,
+        mode: CobaltMode,
+        tiktok_full_audio: bool = False,
+        audio_format: str = "best",
+    ):
+        self.calls.append((mode, tiktok_full_audio, audio_format))
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -147,7 +154,10 @@ async def test_prepare_combines_visuals_with_separate_full_audio() -> None:
         ("video", MediaKind.VIDEO, 0),
         ("audio", MediaKind.AUDIO, 1),
     ]
-    assert client.calls == [(CobaltMode.AUTO, True), (CobaltMode.AUDIO, True)]
+    assert client.calls == [
+        (CobaltMode.AUTO, True, "best"),
+        (CobaltMode.AUDIO, True, "mp3"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -169,7 +179,7 @@ async def test_prepare_reuses_picker_audio_without_second_request() -> None:
     prepared = await backend.prepare(request())
 
     assert [part.key for part in prepared.parts] == ["photo_000", "audio"]
-    assert client.calls == [(CobaltMode.AUTO, True)]
+    assert client.calls == [(CobaltMode.AUTO, True, "best")]
 
 
 @pytest.mark.asyncio
@@ -204,7 +214,10 @@ async def test_instagram_prepare_does_not_duplicate_visual_picker_as_audio() -> 
     assert [(failure.part_key, failure.error_kind) for failure in prepared.failures] == [
         ("audio", BackendErrorKind.UNSUPPORTED)
     ]
-    assert client.calls == [(CobaltMode.AUTO, False), (CobaltMode.AUDIO, False)]
+    assert client.calls == [
+        (CobaltMode.AUTO, False, "best"),
+        (CobaltMode.AUDIO, False, "best"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -235,7 +248,7 @@ async def test_pinterest_non_video_does_not_request_audio(
     prepared = await backend.prepare(pinterest_request())
 
     assert [(part.key, part.media_kind) for part in prepared.parts] == [(key, kind)]
-    assert client.calls == [(CobaltMode.AUTO, False)]
+    assert client.calls == [(CobaltMode.AUTO, False, "best")]
 
 
 @pytest.mark.asyncio
@@ -265,9 +278,9 @@ async def test_pinterest_retries_transient_visual_prepare_once() -> None:
         ("audio", MediaKind.AUDIO),
     ]
     assert client.calls == [
-        (CobaltMode.AUTO, False),
-        (CobaltMode.AUTO, False),
-        (CobaltMode.AUDIO, False),
+        (CobaltMode.AUTO, False, "best"),
+        (CobaltMode.AUTO, False, "best"),
+        (CobaltMode.AUDIO, False, "best"),
     ]
 
 
@@ -299,9 +312,9 @@ async def test_pinterest_retries_transient_audio_prepare_once() -> None:
     ]
     assert prepared.failures == ()
     assert client.calls == [
-        (CobaltMode.AUTO, False),
-        (CobaltMode.AUDIO, False),
-        (CobaltMode.AUDIO, False),
+        (CobaltMode.AUTO, False, "best"),
+        (CobaltMode.AUDIO, False, "best"),
+        (CobaltMode.AUDIO, False, "best"),
     ]
 
 
@@ -331,7 +344,7 @@ async def test_instagram_reel_cover_only_response_triggers_fallback() -> None:
         await backend.prepare(request)
 
     assert raised.value.kind is BackendErrorKind.RETRYABLE
-    assert client.calls == [(CobaltMode.AUTO, False)]
+    assert client.calls == [(CobaltMode.AUTO, False, "best")]
 
 
 @pytest.mark.asyncio
@@ -428,3 +441,42 @@ async def test_oversized_part_does_not_suppress_smaller_part(tmp_path: Path) -> 
         ("photo_000", BackendErrorKind.TOO_LARGE)
     ]
     assert not (tmp_path / "photo_000.part").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("audio_headers", [{"Content-Length": "0"}, {}])
+async def test_empty_cobalt_audio_is_reported_as_failed_part(
+    tmp_path: Path,
+    audio_headers: dict[str, str],
+) -> None:
+    visual = CobaltMediaResponse(
+        items=(
+            item("photo_000", MediaKind.PHOTO, "https://cdn/1.jpg", "one.jpg", 0),
+            item("audio", MediaKind.AUDIO, "https://cdn/a.m4a", "sound.m4a", 1),
+        )
+    )
+    opener = FakeOpener(
+        FakeResponse([b"photo"], headers={"Content-Length": "5", "Content-Type": "image/jpeg"}),
+        FakeResponse([], headers=audio_headers),
+    )
+    backend = CobaltBackend(
+        client=FakeCobaltClient(visual),  # type: ignore[arg-type]
+        validator=FakeValidator(),  # type: ignore[arg-type]
+        opener=opener,  # type: ignore[arg-type]
+        max_upload_bytes=100,
+    )
+    prepared = await backend.prepare(request())
+
+    package = await backend.download_prepared(
+        prepared,
+        frozenset({"photo_000", "audio"}),
+        tmp_path,
+        ignore_progress,
+    )
+
+    assert [artifact.part_key for artifact in package.artifacts] == ["photo_000"]
+    assert [(failure.part_key, failure.error_kind) for failure in package.failures] == [
+        ("audio", BackendErrorKind.RETRYABLE)
+    ]
+    assert not (tmp_path / "audio.part").exists()
+    assert not (tmp_path / "audio.m4a").exists()
