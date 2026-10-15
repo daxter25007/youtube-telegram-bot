@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
@@ -31,6 +32,7 @@ from app.services.media.downloader import MediaDownloader
 from app.services.media.metadata import YtDlpMetadataService
 from app.services.media.models import MediaSource
 from app.services.media.registry import MediaRegistry
+from app.services.monitoring import MonitoringService, heartbeat_loop
 from app.services.queue import DownloadQueue
 from app.services.rate_limit import SlidingWindowRateLimiter
 from app.services.statistics import StatisticsService
@@ -60,13 +62,16 @@ async def run() -> int:
     except ValidationError as exc:
         print(f"Configuration error: {exc.error_count()} invalid setting(s).", file=sys.stderr)
         return 2
-    configure_logging(
+    log_path = configure_logging(
         settings.log_level,
         secrets=(
             settings.bot_token.get_secret_value(),
             settings.telegram_api_hash.get_secret_value(),
             settings.database_url.get_secret_value(),
         ),
+        log_dir=settings.log_dir,
+        max_bytes=settings.log_max_bytes,
+        backup_count=settings.log_backup_count,
     )
     try:
         database = Database(settings.database_url.get_secret_value())
@@ -107,6 +112,14 @@ async def run() -> int:
         await queue.start()
         cleanup_tasks.extend(
             [
+                asyncio.create_task(
+                    heartbeat_loop(
+                        READY_FILE,
+                        interval_seconds=15,
+                        stop_event=stop_cleanup,
+                    ),
+                    name="health-heartbeat",
+                ),
                 asyncio.create_task(
                     cleanup_loop(
                         storage,
@@ -191,6 +204,10 @@ async def run() -> int:
             download_queue=queue,
             download_manager=manager,
             cobalt_client=cobalt_client,
+            monitoring_service=MonitoringService(
+                started_at=datetime.now(UTC),
+                log_path=log_path,
+            ),
         )
         await asyncio.to_thread(READY_FILE.touch)
         await dispatcher.start_polling(
@@ -200,10 +217,10 @@ async def run() -> int:
         )
         return 0
     finally:
-        await asyncio.to_thread(READY_FILE.unlink, missing_ok=True)
         stop_cleanup.set()
         if cleanup_tasks:
             await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+        await asyncio.to_thread(READY_FILE.unlink, missing_ok=True)
         await queue.stop()
         if cobalt_http_session is not None:
             await cobalt_http_session.close()

@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     progress_update_seconds: float = Field(default=3.0, ge=1.0)
 
     log_level: str = "INFO"
+    log_dir: Path = Path("logs")
+    log_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024 * 1024)
+    log_backup_count: int = Field(default=5, ge=1, le=20)
     ytdlp_cookies_file: Path | None = None
 
     @field_validator("admin_ids", mode="before")

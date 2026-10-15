@@ -20,6 +20,8 @@ def test_start_menu_is_available_to_administrators() -> None:
         "admin:users",
         "admin:downloads",
         "admin:channels",
+        "admin:monitoring",
+        "admin:logs",
         "admin:system",
     }
 

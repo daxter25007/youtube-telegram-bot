@@ -365,10 +365,6 @@ class DownloadManager:
                         failed.value,
                         following.value,
                     )
-                    await reporter.update(
-                        "🔄 Основной способ недоступен. Пробую резервный способ...",
-                        force=True,
-                    )
 
                 prepared_parts: tuple[MediaPart, ...] = ()
                 cached_parts: dict[tuple[MediaKind, str], object] = {}

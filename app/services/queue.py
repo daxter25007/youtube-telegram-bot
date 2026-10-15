@@ -41,6 +41,14 @@ class DownloadQueue:
     def pending_count(self) -> int:
         return self._queue.qsize()
 
+    @property
+    def active_count(self) -> int:
+        return max(0, sum(self._user_counts.values()) - self.pending_count)
+
+    @property
+    def is_running(self) -> bool:
+        return self._accepting and bool(self._workers)
+
     async def start(self) -> None:
         if self._workers:
             return

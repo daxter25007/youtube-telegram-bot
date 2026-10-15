@@ -29,3 +29,14 @@ def test_bot_does_not_require_cobalt_health_to_start() -> None:
     block = _service_block("bot")
 
     assert "cobalt:" not in block
+
+
+def test_bot_persists_logs_and_uses_fresh_heartbeat_healthcheck() -> None:
+    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+    block = _service_block("bot")
+
+    assert "bot-logs:/app/logs" in block
+    assert "bot-logs:" in compose
+    assert "p.stat().st_mtime > 60" in block
+    assert "max-size:" in compose
+    assert "max-file:" in compose

@@ -12,6 +12,8 @@ def admin_menu() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="👥 Пользователи", callback_data="admin:users")],
             [InlineKeyboardButton(text="📥 Загрузки", callback_data="admin:downloads")],
             [InlineKeyboardButton(text="📢 Каналы", callback_data="admin:channels")],
+            [InlineKeyboardButton(text="🩺 Мониторинг", callback_data="admin:monitoring")],
+            [InlineKeyboardButton(text="📋 Логи", callback_data="admin:logs")],
             [InlineKeyboardButton(text="⚙️ Система", callback_data="admin:system")],
         ]
     )

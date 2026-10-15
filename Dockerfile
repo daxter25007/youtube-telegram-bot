@@ -25,7 +25,7 @@ COPY scripts ./scripts
 
 RUN pip install --upgrade pip \
     && pip install . \
-    && mkdir -p /shared-temp/jobs \
+    && mkdir -p /shared-temp/jobs /app/logs \
     && chown -R bot:bot /app /shared-temp
 
 USER bot

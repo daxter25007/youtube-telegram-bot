@@ -568,9 +568,11 @@ async def test_cleanup_after_actual_file_exceeds_limit(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_manager_reports_cobalt_fallback(tmp_path: Path) -> None:
-    status, jobs, texts = await run_case(tmp_path, FallbackDownloader())
+async def test_manager_hides_cobalt_fallback_from_user(tmp_path: Path, caplog) -> None:
+    with caplog.at_level("INFO"):
+        status, jobs, texts = await run_case(tmp_path, FallbackDownloader())
 
     assert status == DownloadStatus.COMPLETED
     assert jobs == []
-    assert any("резервный способ" in text for text in texts)
+    assert not any("резервный способ" in text for text in texts)
+    assert "Switching media backend" in caplog.text

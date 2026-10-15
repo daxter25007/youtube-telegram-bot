@@ -48,7 +48,7 @@ PostgreSQL, Local Bot API и Cobalt не публикуются на хост. �
 - merge/remux через ffmpeg, `sendVideo` с `supports_streaming`, fallback на `sendDocument`;
 - очередь, глобальная параллельность и лимит одной активной загрузки на пользователя;
 - throttled progress, timeout и корректное завершение subprocess;
-- обязательные каналы, Telegram-админка, статистика SQL;
+- обязательные каналы, Telegram-админка, статистика SQL, мониторинг и просмотр логов;
 - Alembic, pytest, ruff и secret scanning в GitHub Actions.
 
 ## Требования VPS
@@ -153,7 +153,29 @@ docker compose stop telegram-bot-api
 
 Для проверки подписки бот должен быть администратором канала. Для приватного канала ему также нужен доступ к invite link. Статусы `creator`, `administrator`, `member` считаются подпиской; `left` и `kicked` — нет. Изменения списка каналов начинают действовать немедленно.
 
-Админка также показывает пользователей, последние загрузки, агрегаты за день/7/30 дней, объём, средний размер и время, популярные качества и TOP-10 пользователей.
+Админка также показывает пользователей, последние загрузки, агрегаты за день/7/30 дней,
+объём, средний размер и время, популярные качества и TOP-10 пользователей. Раздел
+`🩺 Мониторинг` проверяет PostgreSQL, Telegram API и Cobalt, показывает uptime, очередь,
+свободное место и число недавних предупреждений/ошибок. Раздел `📋 Логи` доступен только
+администраторам и выводит последние записи, включая внутренние переключения на резервный
+backend. Обычному пользователю такие переключения не показываются.
+
+## Логи и проверка состояния
+
+Бот пишет журнал одновременно в stdout и в `/app/logs/bot.log`. Named volume `bot-logs`
+сохраняет файлы при пересоздании контейнера. Файлы ротируются по достижении
+`LOG_MAX_BYTES`; число архивов задаёт `LOG_BACKUP_COUNT`. Docker-логи всех сервисов также
+ограничены ротацией, чтобы не занимать диск без ограничений.
+
+Healthcheck бота проверяет не только наличие marker-файла, но и свежесть heartbeat. Если
+цикл событий перестал обновлять marker более 60 секунд назад, контейнер получает статус
+`unhealthy`. Состояние контейнеров и полный журнал можно проверить на сервере:
+
+```bash
+docker compose ps
+docker compose logs --tail=100 bot
+docker compose exec bot sh -c 'tail -n 100 /app/logs/bot.log'
+```
 
 ## Размер файлов и временное хранилище
 
@@ -202,6 +224,8 @@ services:
 - `RATE_LIMIT_URLS=5`, `RATE_LIMIT_WINDOW_SECONDS=60`;
 - `DOWNLOAD_REQUEST_TTL_MINUTES=30`;
 - `PROGRESS_UPDATE_SECONDS=3`.
+- `LOG_DIR=/app/logs`, `LOG_MAX_BYTES=10485760`, `LOG_BACKUP_COUNT=5` — постоянный
+  ротируемый журнал бота;
 - `COBALT_ENABLED=true` — включить Cobalt как основной TikTok/Instagram/Pinterest-backend;
 - `COBALT_API_URL=http://cobalt:9000` — только внутренний origin Compose-сервиса;
 - `COBALT_REQUEST_TIMEOUT_SECONDS=30` — timeout получения download instruction;

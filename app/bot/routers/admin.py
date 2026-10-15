@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import platform
 
 from aiogram import Bot, F, Router
@@ -24,10 +25,12 @@ from app.database.repositories.users import UserRepository
 from app.services.cobalt.client import CobaltClient
 from app.services.media.backends.base import DownloadBackend
 from app.services.media.models import MediaSource
+from app.services.monitoring import MonitoringService
 from app.services.queue import DownloadQueue
 from app.services.statistics import StatisticsService
 from app.utils.auth import is_admin
 from app.utils.filesize import human_size
+from app.utils.logging import read_recent_logs
 
 router = Router(name="admin")
 
@@ -78,6 +81,7 @@ async def admin_callbacks(
     statistics_service: StatisticsService,
     download_queue: DownloadQueue,
     cobalt_client: CobaltClient | None,
+    monitoring_service: MonitoringService,
 ) -> None:
     if not callback.data or not _authorized(callback.from_user.id, settings):
         await callback.answer("Недостаточно прав.", show_alert=True)
@@ -128,6 +132,18 @@ async def admin_callbacks(
         await callback.message.answer(f"📥 Последние загрузки:\n{text}")
     elif action == "admin:channels":
         await callback.message.edit_text("📢 Обязательные каналы", reply_markup=channels_menu())
+    elif action == "admin:monitoring":
+        report = await monitoring_service.report(
+            bot=bot,
+            session=session,
+            cobalt_client=cobalt_client,
+            download_queue=download_queue,
+            temp_root=settings.temp_root,
+        )
+        await callback.message.answer(report)
+    elif action == "admin:logs":
+        logs = await asyncio.to_thread(read_recent_logs, monitoring_service.log_path)
+        await callback.message.answer(f"📋 Последние записи журнала\n\n{logs}")
     elif action == "admin:channel:list":
         channels = await ChannelRepository(session).all()
         if not channels:

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import deque
 from collections.abc import Iterable
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 TOKEN_RE = re.compile(r"(?i)(?:bot)?\d{5,}:[A-Za-z0-9_-]{20,}")
 
@@ -20,16 +23,57 @@ class RedactingFormatter(logging.Formatter):
         return rendered
 
 
-def configure_logging(level: str, secrets: Iterable[str]) -> None:
-    handler = logging.StreamHandler()
-    handler.setFormatter(
-        RedactingFormatter(
-            "%(asctime)s %(levelname)s %(name)s: %(message)s",
-            secrets=secrets,
-        )
+def configure_logging(
+    level: str,
+    secrets: Iterable[str],
+    *,
+    log_dir: Path,
+    max_bytes: int,
+    backup_count: int,
+) -> Path:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "bot.log"
+    formatter = RedactingFormatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s",
+        secrets=secrets,
     )
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    file_handler = RotatingFileHandler(
+        log_path,
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(formatter)
     root = logging.getLogger()
     root.handlers.clear()
-    root.addHandler(handler)
+    root.addHandler(stream_handler)
+    root.addHandler(file_handler)
     root.setLevel(level)
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+    return log_path
+
+
+def read_recent_logs(log_path: Path, *, limit: int = 30, max_chars: int = 3500) -> str:
+    if not log_path.exists():
+        return "Журнал пока пуст."
+    with log_path.open(encoding="utf-8", errors="replace") as file:
+        lines = deque((line.rstrip() for line in file), maxlen=limit)
+    rendered = "\n".join(lines) or "Журнал пока пуст."
+    if len(rendered) > max_chars:
+        rendered = "…" + rendered[-(max_chars - 1) :]
+    return rendered
+
+
+def recent_log_counts(log_path: Path, *, limit: int = 500) -> tuple[int, int]:
+    if not log_path.exists():
+        return 0, 0
+    with log_path.open(encoding="utf-8", errors="replace") as file:
+        lines = deque(file, maxlen=limit)
+    warnings = sum(" WARNING " in line for line in lines)
+    errors = sum(
+        " ERROR " in line or " CRITICAL " in line or "Traceback (most recent call last)" in line
+        for line in lines
+    )
+    return warnings, errors
