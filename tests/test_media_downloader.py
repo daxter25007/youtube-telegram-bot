@@ -6,6 +6,8 @@ from app.services.media.downloader import (
     DownloadError,
     MediaDownloader,
     build_download_command,
+    build_pinterest_inspection_command,
+    build_thumbnail_command,
 )
 from app.services.media.models import DownloadPolicy, MediaKind
 from app.services.youtube.downloader import YouTubeDownloader
@@ -48,6 +50,33 @@ def test_audio_download_command_extracts_m4a_without_video_remux(tmp_path: Path)
 
 def test_legacy_youtube_downloader_name_uses_shared_implementation() -> None:
     assert YouTubeDownloader is MediaDownloader
+
+
+def test_pinterest_inspection_command_allows_photo_metadata() -> None:
+    url = "https://www.pinterest.com/pin/675328906665725422/"
+
+    command = build_pinterest_inspection_command(url=url, cookies_file=None)
+
+    assert "--ignore-no-formats-error" in command
+    assert "--skip-download" in command
+    assert "--dump-single-json" in command
+    assert command[-2:] == ["--", url]
+
+
+def test_thumbnail_command_writes_converted_jpeg_inside_template(tmp_path: Path) -> None:
+    url = "https://www.pinterest.com/pin/675328906665725422/"
+    output_template = str(tmp_path / "photo_000.%(ext)s")
+
+    command = build_thumbnail_command(
+        url=url,
+        output_template=output_template,
+        cookies_file=None,
+    )
+
+    assert "--write-thumbnail" in command
+    assert command[command.index("--convert-thumbnails") + 1] == "jpg"
+    assert command[command.index("--output") + 1] == output_template
+    assert command[-2:] == ["--", url]
 
 
 class FakeStream:

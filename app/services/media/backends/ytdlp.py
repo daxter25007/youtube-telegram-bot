@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.services.media.backends.base import (
+    BackendError,
     BackendErrorKind,
     DownloadBackend,
     MediaDownloadRequest,
@@ -28,6 +29,21 @@ class YtDlpBackend:
         self.downloader = downloader
 
     async def prepare(self, request: MediaDownloadRequest) -> PreparedMedia:
+        if request.source is MediaSource.PINTEREST and request.option_key == "pinterest_bundle":
+            try:
+                if await self.downloader.is_pinterest_photo(request.url):
+                    return PreparedMedia(
+                        request=request,
+                        parts=(
+                            MediaPart(
+                                key="photo_000",
+                                media_kind=MediaKind.PHOTO,
+                                position=0,
+                            ),
+                        ),
+                    )
+            except DownloadError as exc:
+                raise BackendError(str(exc), kind=BackendErrorKind.RETRYABLE) from exc
         if request.option_key in BUNDLE_OPTIONS:
             parts = (
                 MediaPart(key="video", media_kind=MediaKind.VIDEO, position=0),
@@ -72,13 +88,24 @@ class YtDlpBackend:
                         audio_format="best",
                     )
             try:
-                package = await self.downloader.download(
-                    url=prepared.request.url,
-                    policy=policy,
-                    job_dir=job_dir,
-                    progress=progress,
-                    part_key=part.key,
-                )
+                if (
+                    prepared.request.source is MediaSource.PINTEREST
+                    and part.media_kind is MediaKind.PHOTO
+                ):
+                    await progress("downloading", None)
+                    package = await self.downloader.download_thumbnail(
+                        url=prepared.request.url,
+                        job_dir=job_dir,
+                        part_key=part.key,
+                    )
+                else:
+                    package = await self.downloader.download(
+                        url=prepared.request.url,
+                        policy=policy,
+                        job_dir=job_dir,
+                        progress=progress,
+                        part_key=part.key,
+                    )
             except DownloadError:
                 failures.append(
                     MediaPartFailure(

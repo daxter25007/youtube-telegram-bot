@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import sys
 from collections.abc import Awaitable, Callable
@@ -9,6 +10,7 @@ from pathlib import Path
 from app.services.media.models import (
     DownloadPolicy,
     MediaArtifact,
+    MediaKind,
     MediaPackage,
 )
 from app.services.media.probe import probe_media
@@ -73,9 +75,131 @@ def build_download_command(
     return command
 
 
+def build_pinterest_inspection_command(
+    *,
+    url: str,
+    cookies_file: str | None,
+) -> list[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "yt_dlp",
+        "--no-playlist",
+        "--ignore-no-formats-error",
+        "--skip-download",
+        "--dump-single-json",
+        "--socket-timeout",
+        "30",
+    ]
+    if cookies_file:
+        command.extend(["--cookies", cookies_file])
+    command.extend(["--", url])
+    return command
+
+
+def build_thumbnail_command(
+    *,
+    url: str,
+    output_template: str,
+    cookies_file: str | None,
+) -> list[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "yt_dlp",
+        "--no-playlist",
+        "--ignore-no-formats-error",
+        "--skip-download",
+        "--write-thumbnail",
+        "--convert-thumbnails",
+        "jpg",
+        "--socket-timeout",
+        "30",
+        "--retries",
+        "5",
+        "--output",
+        output_template,
+    ]
+    if cookies_file:
+        command.extend(["--cookies", cookies_file])
+    command.extend(["--", url])
+    return command
+
+
 class MediaDownloader:
     def __init__(self, cookies_file: str | None = None) -> None:
         self.cookies_file = cookies_file
+
+    async def is_pinterest_photo(self, url: str) -> bool:
+        process = await asyncio.create_subprocess_exec(
+            *build_pinterest_inspection_command(url=url, cookies_file=self.cookies_file),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            **subprocess_options(),
+        )
+        try:
+            stdout, stderr = await process.communicate()
+        except asyncio.CancelledError:
+            await stop_process(process)
+            raise
+        if process.returncode != 0:
+            tail = stderr.decode("utf-8", errors="replace")[-2_000:]
+            raise DownloadError(tail or "Не удалось определить тип Pinterest-пина")
+        try:
+            metadata = json.loads(stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise DownloadError("yt-dlp вернул некорректные метаданные Pinterest") from exc
+        return not metadata.get("formats") and bool(metadata.get("thumbnails"))
+
+    async def download_thumbnail(
+        self,
+        *,
+        url: str,
+        job_dir: Path,
+        part_key: str,
+    ) -> MediaPackage:
+        resolved_job_dir = await asyncio.to_thread(job_dir.resolve)
+        process = await asyncio.create_subprocess_exec(
+            *build_thumbnail_command(
+                url=url,
+                output_template=str(job_dir / f"{part_key}.%(ext)s"),
+                cookies_file=self.cookies_file,
+            ),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            **subprocess_options(),
+        )
+        tail: list[str] = []
+        try:
+            assert process.stdout is not None
+            while line_bytes := await process.stdout.readline():
+                tail.append(line_bytes.decode("utf-8", errors="replace").strip())
+                tail = tail[-20:]
+            return_code = await process.wait()
+        except asyncio.CancelledError:
+            await stop_process(process)
+            raise
+        if return_code != 0:
+            raise DownloadError("\n".join(tail)[-2_000:])
+        final_path = await asyncio.to_thread(self._find_final_file, job_dir, part_key)
+        if final_path is None or not final_path.is_file():
+            raise DownloadError("yt-dlp завершился без изображения внутри job-каталога")
+        resolved_final_path = await asyncio.to_thread(final_path.resolve)
+        if resolved_final_path.parent != resolved_job_dir:
+            raise DownloadError("yt-dlp вернул изображение вне job-каталога")
+        probe = await self._probe(resolved_final_path)
+        return MediaPackage(
+            artifacts=(
+                MediaArtifact(
+                    path=resolved_final_path,
+                    media_kind=MediaKind.PHOTO,
+                    part_key=part_key,
+                    width=probe.get("width"),
+                    height=probe.get("height"),
+                    mime_type="image/jpeg",
+                ),
+            )
+        )
 
     async def download(
         self,
