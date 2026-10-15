@@ -159,6 +159,25 @@ async def test_client_recognizes_single_photo_response_from_filename() -> None:
 
 
 @pytest.mark.asyncio
+async def test_client_recognizes_single_gif_as_animation() -> None:
+    client, _, _, _ = client_for(
+        {
+            "status": "redirect",
+            "url": "https://cdn.example/animated.gif",
+            "filename": "pinterest_123.gif",
+        }
+    )
+
+    result = await client.prepare(
+        "https://www.pinterest.com/pin/123/",
+        mode=CobaltMode.AUTO,
+    )
+
+    assert result.items[0].part_key == "animation_000"
+    assert result.items[0].media_kind.value == "animation"
+
+
+@pytest.mark.asyncio
 async def test_audio_mode_requests_best_full_tiktok_audio() -> None:
     client, session, _, _ = client_for(
         {"status": "redirect", "url": "https://cdn.example/sound.opus", "filename": "sound.opus"}

@@ -28,4 +28,5 @@ def test_welcome_text_names_only_supported_platforms() -> None:
     assert "YouTube" in WELCOME_TEXT
     assert "TikTok" in WELCOME_TEXT
     assert "Instagram" in WELCOME_TEXT
+    assert "Pinterest" in WELCOME_TEXT
     assert "VK" not in WELCOME_TEXT

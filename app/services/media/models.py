@@ -9,11 +9,13 @@ class MediaSource(StrEnum):
     YOUTUBE = "youtube"
     TIKTOK = "tiktok"
     INSTAGRAM = "instagram"
+    PINTEREST = "pinterest"
 
 
 class MediaKind(StrEnum):
     VIDEO = "video"
     PHOTO = "photo"
+    ANIMATION = "animation"
     AUDIO = "audio"
 
 

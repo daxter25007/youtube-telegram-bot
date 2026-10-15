@@ -49,11 +49,13 @@ class FakeSubscriptions:
 
 def uploaded(part_key: str, kind: MediaKind, *, document: bool = False) -> UploadResult:
     file = SimpleNamespace(file_id=f"file-{part_key}", file_unique_id=f"unique-{part_key}")
-    message = SimpleNamespace(video=None, audio=None, photo=None, document=None)
+    message = SimpleNamespace(video=None, animation=None, audio=None, photo=None, document=None)
     if document:
         message.document = file
     elif kind is MediaKind.VIDEO:
         message.video = file
+    elif kind is MediaKind.ANIMATION:
+        message.animation = file
     elif kind is MediaKind.AUDIO:
         message.audio = file
     else:
@@ -138,9 +140,12 @@ class RecordingRouter:
         for part in self.parts:
             if part.key not in self.requested or part.key in failed_keys:
                 continue
-            suffix = {MediaKind.VIDEO: ".mp4", MediaKind.PHOTO: ".jpg", MediaKind.AUDIO: ".m4a"}[
-                part.media_kind
-            ]
+            suffix = {
+                MediaKind.VIDEO: ".mp4",
+                MediaKind.PHOTO: ".jpg",
+                MediaKind.ANIMATION: ".gif",
+                MediaKind.AUDIO: ".m4a",
+            }[part.media_kind]
             path = job_dir / f"{part.key}{suffix}"
             path.write_bytes(part.key.encode())
             artifacts.append(
@@ -291,6 +296,44 @@ async def test_mixed_carousel_delivery_preserves_visual_order(tmp_path: Path) ->
     )
 
     assert telegram.sent == ["photo_000", "video_000", "photo_001", "audio"]
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_pinterest_animation_is_downloaded_delivered_and_manifested(tmp_path: Path) -> None:
+    parts = (MediaPart(key="animation_000", media_kind=MediaKind.ANIMATION, position=0),)
+    database, user_id, download_id = await setup_database(
+        tmp_path,
+        source=MediaSource.PINTEREST,
+        source_url="https://www.pinterest.com/pin/123456789/",
+        requested_option="pinterest_bundle",
+    )
+    telegram = RecordingTelegramFiles()
+
+    await manager(database, tmp_path, RecordingRouter(parts), telegram).run(
+        bot=object(),  # type: ignore[arg-type]
+        chat_id=123,
+        telegram_user_id=123,
+        user_id=user_id,
+        download_id=download_id,
+        source_url="https://www.pinterest.com/pin/123456789/",
+        source=MediaSource.PINTEREST,
+        source_media_id="post-1",
+        media_kind=MediaKind.VIDEO,
+        option_key="pinterest_bundle",
+        policy=DownloadPolicy(format_selector="best"),
+        title="Pinterest Pin",
+        progress_message=FakeMessage(),  # type: ignore[arg-type]
+    )
+
+    async with database.session() as session:
+        manifest = await MediaManifestRepository(session).get(
+            source=MediaSource.PINTEREST,
+            source_media_id="post-1",
+        )
+    assert telegram.sent == ["animation_000"]
+    assert manifest is not None
+    assert manifest.parts == parts
     await database.close()
 
 

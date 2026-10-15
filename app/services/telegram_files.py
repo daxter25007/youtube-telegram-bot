@@ -50,6 +50,8 @@ class UploadResult:
             media = self.message.document
         elif self.media_kind is MediaKind.VIDEO:
             media = self.message.video
+        elif self.media_kind is MediaKind.ANIMATION:
+            media = self.message.animation
         elif self.media_kind is MediaKind.AUDIO:
             media = self.message.audio
         else:
@@ -113,6 +115,8 @@ class TelegramFileService:
                     supports_streaming=True,
                     **kwargs,
                 )
+            elif media_kind is MediaKind.ANIMATION:
+                message = await bot.send_animation(chat_id, animation=file_id, **kwargs)
             elif media_kind is MediaKind.AUDIO:
                 message = await bot.send_audio(chat_id, audio=file_id, **kwargs)
             else:
@@ -165,6 +169,17 @@ class TelegramFileService:
                 caption=caption if caption_available else "",
             )
             results.extend(photo_results)
+            caption_available = False
+        for artifact in package.artifacts:
+            if artifact.media_kind is not MediaKind.ANIMATION:
+                continue
+            result = await self._send_animation(
+                bot,
+                chat_id=chat_id,
+                media=artifact,
+                caption=caption if caption_available else "",
+            )
+            results.append(result)
             caption_available = False
         for artifact in package.artifacts:
             if artifact.media_kind is not MediaKind.AUDIO:
@@ -376,6 +391,41 @@ class TelegramFileService:
         return UploadResult(
             part_key=media.part_key,
             media_kind=MediaKind.AUDIO,
+            message=message,
+            sent_as_document=sent_as_document,
+        )
+
+    async def _send_animation(
+        self,
+        bot: Bot,
+        *,
+        chat_id: int,
+        media: MediaArtifact,
+        caption: str,
+    ) -> UploadResult:
+        local_uri = _local_uri(media)
+        try:
+            message = await bot.send_animation(
+                chat_id,
+                animation=local_uri,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                duration=media.duration,
+                width=media.width,
+                height=media.height,
+            )
+            sent_as_document = False
+        except TelegramBadRequest:
+            message = await bot.send_document(
+                chat_id,
+                document=local_uri,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+            )
+            sent_as_document = True
+        return UploadResult(
+            part_key=media.part_key,
+            media_kind=MediaKind.ANIMATION,
             message=message,
             sent_as_document=sent_as_document,
         )

@@ -10,9 +10,15 @@ from app.services.media.backends.base import (
     PreparedMedia,
 )
 from app.services.media.downloader import DownloadError, MediaDownloader, ProgressCallback
-from app.services.media.models import DownloadPolicy, MediaKind, MediaPackage, MediaPart
+from app.services.media.models import (
+    DownloadPolicy,
+    MediaKind,
+    MediaPackage,
+    MediaPart,
+    MediaSource,
+)
 
-BUNDLE_OPTIONS = frozenset({"tiktok_bundle", "instagram_bundle"})
+BUNDLE_OPTIONS = frozenset({"tiktok_bundle", "instagram_bundle", "pinterest_bundle"})
 
 
 class YtDlpBackend:
@@ -51,16 +57,20 @@ class YtDlpBackend:
                 continue
             policy = prepared.request.policy
             if prepared.request.option_key in BUNDLE_OPTIONS:
-                policy = (
-                    DownloadPolicy(format_selector="best[ext=mp4]/best")
-                    if part.media_kind is MediaKind.VIDEO
-                    else DownloadPolicy(
+                if part.media_kind is MediaKind.VIDEO:
+                    format_selector = (
+                        "bestvideo[ext=mp4]/bestvideo/best[ext=mp4]/best"
+                        if prepared.request.source is MediaSource.PINTEREST
+                        else "best[ext=mp4]/best"
+                    )
+                    policy = DownloadPolicy(format_selector=format_selector)
+                else:
+                    policy = DownloadPolicy(
                         format_selector="bestaudio/best",
                         media_kind=MediaKind.AUDIO,
                         extract_audio=True,
                         audio_format="best",
                     )
-                )
             try:
                 package = await self.downloader.download(
                     url=prepared.request.url,

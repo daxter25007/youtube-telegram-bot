@@ -14,6 +14,7 @@ def telegram_message(kind: MediaKind, file_id: str):
     file = SimpleNamespace(file_id=file_id, file_unique_id=f"unique-{file_id}")
     return SimpleNamespace(
         video=file if kind is MediaKind.VIDEO else None,
+        animation=file if kind is MediaKind.ANIMATION else None,
         audio=file if kind is MediaKind.AUDIO else None,
         photo=[file] if kind is MediaKind.PHOTO else None,
         document=None,
@@ -21,8 +22,9 @@ def telegram_message(kind: MediaKind, file_id: str):
 
 
 class FakeBot:
-    def __init__(self, *, reject_video: bool = False) -> None:
+    def __init__(self, *, reject_video: bool = False, reject_animation: bool = False) -> None:
         self.reject_video = reject_video
+        self.reject_animation = reject_animation
         self.calls: list[tuple[str, object, dict[str, object]]] = []
 
     async def get_file(self, file_id: str):
@@ -37,6 +39,12 @@ class FakeBot:
     async def send_audio(self, chat_id: int, *, audio: object, **kwargs: object):
         self.calls.append(("audio", audio, kwargs))
         return telegram_message(MediaKind.AUDIO, "audio-id")
+
+    async def send_animation(self, chat_id: int, *, animation: object, **kwargs: object):
+        self.calls.append(("animation", animation, kwargs))
+        if self.reject_animation:
+            raise TelegramBadRequest(method=SimpleNamespace(), message="bad animation")
+        return telegram_message(MediaKind.ANIMATION, "animation-id")
 
     async def send_document(self, chat_id: int, *, document: object, **kwargs: object):
         self.calls.append(("document", document, kwargs))
@@ -133,6 +141,31 @@ async def test_single_photo_uses_send_photo() -> None:
 
 
 @pytest.mark.asyncio
+async def test_animation_uses_player_and_falls_back_to_document() -> None:
+    bot = FakeBot(reject_animation=True)
+    package = MediaPackage(
+        artifacts=(
+            MediaArtifact(
+                path=Path("/media/pin.gif"),
+                media_kind=MediaKind.ANIMATION,
+                part_key="animation_000",
+            ),
+        )
+    )
+
+    results = await TelegramFileService().send_artifacts(  # type: ignore[arg-type]
+        bot,
+        chat_id=1,
+        package=package,
+        caption="animation",
+    )
+
+    assert [call[0] for call in bot.calls] == ["animation", "document"]
+    assert results[0].media_kind is MediaKind.ANIMATION
+    assert results[0].sent_as_document is True
+
+
+@pytest.mark.asyncio
 async def test_eleven_mixed_photos_keep_order_across_group_and_single() -> None:
     bot = FakeBot()
     photos = tuple(
@@ -216,6 +249,7 @@ async def test_mixed_visual_album_preserves_photo_and_video_order() -> None:
     ("kind", "sent_as_document", "method"),
     [
         (MediaKind.VIDEO, False, "video"),
+        (MediaKind.ANIMATION, False, "animation"),
         (MediaKind.AUDIO, False, "audio"),
         (MediaKind.PHOTO, False, "photo"),
         (MediaKind.AUDIO, True, "document"),

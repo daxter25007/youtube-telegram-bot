@@ -171,9 +171,12 @@ class CobaltClient:
                 media_kind = MediaKind.AUDIO
                 part_key = "audio"
                 fallback_name = "audio"
+            elif Path(filename).suffix.lower() == ".gif":
+                media_kind = MediaKind.ANIMATION
+                part_key = "animation_000"
+                fallback_name = "animation_000.gif"
             elif Path(filename).suffix.lower() in {
                 ".avif",
-                ".gif",
                 ".jpeg",
                 ".jpg",
                 ".png",

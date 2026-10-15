@@ -145,11 +145,31 @@ class CobaltBackend:
         self.opener = opener
         self.max_upload_bytes = max_upload_bytes
 
+    async def _prepare_response(
+        self,
+        request: MediaDownloadRequest,
+        *,
+        mode: CobaltMode,
+        tiktok_full_audio: bool,
+    ):
+        attempts = 2 if request.source is MediaSource.PINTEREST else 1
+        for attempt in range(attempts):
+            try:
+                return await self.client.prepare(
+                    request.url,
+                    mode=mode,
+                    tiktok_full_audio=tiktok_full_audio,
+                )
+            except CobaltClientError as exc:
+                if attempt + 1 == attempts or exc.kind is not CobaltErrorKind.RETRYABLE:
+                    raise
+        raise RuntimeError("unreachable")
+
     async def prepare(self, request: MediaDownloadRequest) -> PreparedMedia:
         tiktok_full_audio = request.source is MediaSource.TIKTOK
         try:
-            visual = await self.client.prepare(
-                request.url,
+            visual = await self._prepare_response(
+                request,
                 mode=CobaltMode.AUTO,
                 tiktok_full_audio=tiktok_full_audio,
             )
@@ -173,10 +193,14 @@ class CobaltBackend:
 
         items = list(visual.items)
         preparation_failures: list[MediaPartFailure] = []
-        if not any(item.media_kind is MediaKind.AUDIO for item in items):
+        should_request_audio = not any(item.media_kind is MediaKind.AUDIO for item in items) and (
+            request.source is not MediaSource.PINTEREST
+            or any(item.media_kind is MediaKind.VIDEO for item in items)
+        )
+        if should_request_audio:
             try:
-                audio = await self.client.prepare(
-                    request.url,
+                audio = await self._prepare_response(
+                    request,
                     mode=CobaltMode.AUDIO,
                     tiktok_full_audio=tiktok_full_audio,
                 )
@@ -305,6 +329,7 @@ class CobaltBackend:
             suffix = {
                 MediaKind.VIDEO: ".mp4",
                 MediaKind.PHOTO: ".jpg",
+                MediaKind.ANIMATION: ".gif",
                 MediaKind.AUDIO: ".bin",
             }[item.media_kind]
         part_path = job_dir / f"{item.part_key}.part"

@@ -36,6 +36,21 @@ def test_admin_download_summary_names_instagram_source() -> None:
     )
 
 
+def test_admin_download_summary_names_pinterest_source() -> None:
+    download = SimpleNamespace(
+        id=9,
+        source=MediaSource.PINTEREST,
+        requested_option="pinterest_bundle",
+        requested_quality=None,
+        status=DownloadStatus.COMPLETED,
+        backend=DownloadBackend.COBALT,
+    )
+
+    assert _download_summary_line(download) == (
+        "#9 Pinterest · pinterest bundle · cobalt — completed"
+    )
+
+
 class FakeCobaltClient:
     def __init__(self, healthy: bool) -> None:
         self.healthy = healthy

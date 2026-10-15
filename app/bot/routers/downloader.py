@@ -29,7 +29,7 @@ from app.utils.filesize import format_duration
 
 logger = logging.getLogger(__name__)
 router = Router(name="downloader")
-PUBLICATION_SOURCES = frozenset({MediaSource.TIKTOK, MediaSource.INSTAGRAM})
+PUBLICATION_SOURCES = frozenset({MediaSource.TIKTOK, MediaSource.INSTAGRAM, MediaSource.PINTEREST})
 
 
 def _option_from_json(metadata: dict[str, Any], option_key: str) -> DownloadOption | None:

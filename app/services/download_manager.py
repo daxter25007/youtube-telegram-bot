@@ -47,7 +47,7 @@ from app.services.telegram_files import (
 from app.utils.filesize import is_too_large
 
 logger = logging.getLogger(__name__)
-PUBLICATION_SOURCES = frozenset({MediaSource.TIKTOK, MediaSource.INSTAGRAM})
+PUBLICATION_SOURCES = frozenset({MediaSource.TIKTOK, MediaSource.INSTAGRAM, MediaSource.PINTEREST})
 TELEGRAM_CAPTION_MAX_UTF16 = 1024
 INVALID_CACHED_FILE_MARKERS = (
     "wrong file identifier",
@@ -386,7 +386,8 @@ class DownloadManager:
                             [
                                 part
                                 for part in manifest.parts
-                                if part.media_kind in {MediaKind.PHOTO, MediaKind.VIDEO}
+                                if part.media_kind
+                                in {MediaKind.PHOTO, MediaKind.VIDEO, MediaKind.ANIMATION}
                             ]
                             if manifest
                             else []
@@ -394,7 +395,8 @@ class DownloadManager:
                         prepared_visuals = [
                             part
                             for part in prepared.parts
-                            if part.media_kind in {MediaKind.PHOTO, MediaKind.VIDEO}
+                            if part.media_kind
+                            in {MediaKind.PHOTO, MediaKind.VIDEO, MediaKind.ANIMATION}
                         ]
                         known_richer_manifest = bool(
                             manifest and len(manifest_visuals) > len(prepared_visuals)
@@ -578,6 +580,7 @@ class DownloadManager:
                             {
                                 MediaKind.VIDEO: "видео",
                                 MediaKind.PHOTO: "фото",
+                                MediaKind.ANIMATION: "анимация",
                                 MediaKind.AUDIO: "аудио",
                             }[failure.media_kind]
                             for failure in failures
@@ -748,7 +751,7 @@ class DownloadManager:
                     for item in batch
                 )
         for part in ordered:
-            if part.media_kind is not MediaKind.AUDIO:
+            if part.media_kind not in {MediaKind.ANIMATION, MediaKind.AUDIO}:
                 continue
             cached_item = cached.get((part.media_kind, part.key))
             try:

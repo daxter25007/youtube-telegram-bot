@@ -158,6 +158,7 @@ async def run() -> int:
                 MediaSource.YOUTUBE: (ytdlp_backend,),
                 MediaSource.TIKTOK: tuple(publication_backends),
                 MediaSource.INSTAGRAM: tuple(publication_backends),
+                MediaSource.PINTEREST: tuple(publication_backends),
             }
         )
         manager = DownloadManager(

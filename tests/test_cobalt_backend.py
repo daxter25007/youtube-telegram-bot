@@ -112,6 +112,15 @@ def instagram_request() -> MediaDownloadRequest:
     )
 
 
+def pinterest_request() -> MediaDownloadRequest:
+    return MediaDownloadRequest(
+        source=MediaSource.PINTEREST,
+        url="https://www.pinterest.com/pin/123456789/",
+        option_key="pinterest_bundle",
+        policy=DownloadPolicy(format_selector="best"),
+    )
+
+
 async def ignore_progress(stage: str, percent: float | None) -> None:
     return None
 
@@ -196,6 +205,104 @@ async def test_instagram_prepare_does_not_duplicate_visual_picker_as_audio() -> 
         ("audio", BackendErrorKind.UNSUPPORTED)
     ]
     assert client.calls == [(CobaltMode.AUTO, False), (CobaltMode.AUDIO, False)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "key", "filename"),
+    [
+        (MediaKind.PHOTO, "photo_000", "pin.jpg"),
+        (MediaKind.ANIMATION, "animation_000", "pin.gif"),
+    ],
+)
+async def test_pinterest_non_video_does_not_request_audio(
+    kind: MediaKind,
+    key: str,
+    filename: str,
+) -> None:
+    visual = CobaltMediaResponse(items=(item(key, kind, f"https://cdn/{filename}", filename, 0),))
+    audio = CobaltMediaResponse(
+        items=(item("audio", MediaKind.AUDIO, "https://cdn/audio.m4a", "audio.m4a", 0),)
+    )
+    client = FakeCobaltClient(visual, audio)
+    backend = CobaltBackend(
+        client=client,  # type: ignore[arg-type]
+        validator=FakeValidator(),  # type: ignore[arg-type]
+        opener=FakeOpener(),  # type: ignore[arg-type]
+        max_upload_bytes=100,
+    )
+
+    prepared = await backend.prepare(pinterest_request())
+
+    assert [(part.key, part.media_kind) for part in prepared.parts] == [(key, kind)]
+    assert client.calls == [(CobaltMode.AUTO, False)]
+
+
+@pytest.mark.asyncio
+async def test_pinterest_retries_transient_visual_prepare_once() -> None:
+    visual = CobaltMediaResponse(
+        items=(item("video", MediaKind.VIDEO, "https://cdn/video.mp4", "video.mp4", 0),)
+    )
+    audio = CobaltMediaResponse(
+        items=(item("audio", MediaKind.AUDIO, "https://cdn/audio.m4a", "audio.m4a", 0),)
+    )
+    client = FakeCobaltClient(
+        CobaltClientError("temporary Pinterest fetch failure", kind=CobaltErrorKind.RETRYABLE),  # type: ignore[arg-type]
+        visual,
+        audio,
+    )
+    backend = CobaltBackend(
+        client=client,  # type: ignore[arg-type]
+        validator=FakeValidator(),  # type: ignore[arg-type]
+        opener=FakeOpener(),  # type: ignore[arg-type]
+        max_upload_bytes=100,
+    )
+
+    prepared = await backend.prepare(pinterest_request())
+
+    assert [(part.key, part.media_kind) for part in prepared.parts] == [
+        ("video", MediaKind.VIDEO),
+        ("audio", MediaKind.AUDIO),
+    ]
+    assert client.calls == [
+        (CobaltMode.AUTO, False),
+        (CobaltMode.AUTO, False),
+        (CobaltMode.AUDIO, False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pinterest_retries_transient_audio_prepare_once() -> None:
+    visual = CobaltMediaResponse(
+        items=(item("video", MediaKind.VIDEO, "https://cdn/video.mp4", "video.mp4", 0),)
+    )
+    audio = CobaltMediaResponse(
+        items=(item("audio", MediaKind.AUDIO, "https://cdn/audio.m4a", "audio.m4a", 0),)
+    )
+    client = FakeCobaltClient(
+        visual,
+        CobaltClientError("temporary Pinterest audio failure", kind=CobaltErrorKind.RETRYABLE),  # type: ignore[arg-type]
+        audio,
+    )
+    backend = CobaltBackend(
+        client=client,  # type: ignore[arg-type]
+        validator=FakeValidator(),  # type: ignore[arg-type]
+        opener=FakeOpener(),  # type: ignore[arg-type]
+        max_upload_bytes=100,
+    )
+
+    prepared = await backend.prepare(pinterest_request())
+
+    assert [(part.key, part.media_kind) for part in prepared.parts] == [
+        ("video", MediaKind.VIDEO),
+        ("audio", MediaKind.AUDIO),
+    ]
+    assert prepared.failures == ()
+    assert client.calls == [
+        (CobaltMode.AUTO, False),
+        (CobaltMode.AUDIO, False),
+        (CobaltMode.AUDIO, False),
+    ]
 
 
 @pytest.mark.asyncio
