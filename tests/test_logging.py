@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from app.utils.logging import configure_logging, read_recent_logs, recent_log_counts
+from app.utils.logging import configure_logging, recent_log_counts
 
 
 def test_file_logging_redacts_secrets_and_is_readable(tmp_path: Path) -> None:
@@ -18,7 +18,7 @@ def test_file_logging_redacts_secrets_and_is_readable(tmp_path: Path) -> None:
     for handler in logging.getLogger().handlers:
         handler.flush()
 
-    logs = read_recent_logs(log_path)
+    logs = log_path.read_text(encoding="utf-8")
     assert "private-value" not in logs
     assert "[REDACTED]" in logs
     assert recent_log_counts(log_path) == (1, 1)

@@ -55,17 +55,6 @@ def configure_logging(
     return log_path
 
 
-def read_recent_logs(log_path: Path, *, limit: int = 30, max_chars: int = 3500) -> str:
-    if not log_path.exists():
-        return "Журнал пока пуст."
-    with log_path.open(encoding="utf-8", errors="replace") as file:
-        lines = deque((line.rstrip() for line in file), maxlen=limit)
-    rendered = "\n".join(lines) or "Журнал пока пуст."
-    if len(rendered) > max_chars:
-        rendered = "…" + rendered[-(max_chars - 1) :]
-    return rendered
-
-
 def recent_log_counts(log_path: Path, *, limit: int = 500) -> tuple[int, int]:
     if not log_path.exists():
         return 0, 0

@@ -77,6 +77,7 @@ services:
       - backend
 
   bot:
+    image: youtube-telegram-bot:local
     build:
       context: .
       dockerfile: Dockerfile
@@ -102,6 +103,33 @@ services:
     stop_grace_period: 45s
     networks:
       - backend
+
+  log-viewer:
+    image: youtube-telegram-bot:local
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["python", "-m", "app.log_viewer"]
+    environment:
+      LOG_DIR: /app/logs
+      LOG_VIEWER_HOST: 0.0.0.0
+      LOG_VIEWER_PORT: 8080
+    ports:
+      - "127.0.0.1:${LOG_VIEWER_PORT:-8088}:8080"
+    volumes:
+      - bot-logs:/app/logs:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
 
 networks:
   backend:

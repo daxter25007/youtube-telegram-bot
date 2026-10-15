@@ -40,3 +40,15 @@ def test_bot_persists_logs_and_uses_fresh_heartbeat_healthcheck() -> None:
     assert "p.stat().st_mtime > 60" in block
     assert "max-size:" in compose
     assert "max-file:" in compose
+
+
+def test_log_viewer_is_loopback_only_and_cannot_modify_logs() -> None:
+    block = _service_block("log-viewer")
+
+    assert '"127.0.0.1:${LOG_VIEWER_PORT:-8088}:8080"' in block
+    assert "bot-logs:/app/logs:ro" in block
+    assert "read_only: true" in block
+    assert "no-new-privileges:true" in block
+    assert "cap_drop:" in block
+    assert "/var/run/docker.sock" not in block
+    assert "env_file:" not in block

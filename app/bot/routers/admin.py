@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import platform
 
 from aiogram import Bot, F, Router
@@ -30,7 +29,6 @@ from app.services.queue import DownloadQueue
 from app.services.statistics import StatisticsService
 from app.utils.auth import is_admin
 from app.utils.filesize import human_size
-from app.utils.logging import read_recent_logs
 
 router = Router(name="admin")
 
@@ -141,9 +139,6 @@ async def admin_callbacks(
             temp_root=settings.temp_root,
         )
         await callback.message.answer(report)
-    elif action == "admin:logs":
-        logs = await asyncio.to_thread(read_recent_logs, monitoring_service.log_path)
-        await callback.message.answer(f"📋 Последние записи журнала\n\n{logs}")
     elif action == "admin:channel:list":
         channels = await ChannelRepository(session).all()
         if not channels:
