@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.bot.middlewares.audit import AuditMiddleware
 from app.bot.middlewares.database import DatabaseUserMiddleware
 from app.bot.routers import admin_router, downloader_router, start_router
 from app.config import Settings, get_settings
@@ -184,6 +185,7 @@ async def run() -> int:
             bot_username=me.username or "",
         )
         dispatcher = Dispatcher()
+        dispatcher.update.outer_middleware(AuditMiddleware())
         dispatcher.update.outer_middleware(DatabaseUserMiddleware(database))
         dispatcher.include_routers(start_router, admin_router, downloader_router)
         dispatcher.workflow_data.update(

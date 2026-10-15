@@ -44,6 +44,7 @@ from app.services.telegram_files import (
     TelegramMediaInput,
     UploadResult,
 )
+from app.utils.audit import audit_event
 from app.utils.filesize import is_too_large
 
 logger = logging.getLogger(__name__)
@@ -165,6 +166,12 @@ class DownloadManager:
 
     async def cancel_queued(self, download_id: int, progress_message: Message) -> None:
         await self._status(download_id, DownloadStatus.CANCELLED, error_type="shutdown")
+        audit_event(
+            "download_finished",
+            download_id=download_id,
+            status=DownloadStatus.CANCELLED,
+            outcome="shutdown_before_start",
+        )
         try:
             await progress_message.edit_text("⌛ Загрузка отменена: бот завершает работу.")
         except TelegramAPIError:
@@ -194,6 +201,15 @@ class DownloadManager:
                 requested_option=option_key,
             )
         if cached is None:
+            audit_event(
+                "download_cache_miss",
+                download_id=download_id,
+                chat_id=chat_id,
+                source=source,
+                source_media_id=source_media_id,
+                media_kind=media_kind,
+                option=option_key,
+            )
             return False
 
         try:
@@ -222,6 +238,13 @@ class DownloadManager:
             )
             async with self.database.session() as session:
                 await MediaCacheRepository(session).delete(cached.id)
+            audit_event(
+                "download_cache_invalid",
+                download_id=download_id,
+                source=source,
+                source_media_id=source_media_id,
+                option=option_key,
+            )
             return False
         async with self.database.session() as session:
             await MediaCacheRepository(session).touch(cached.id)
@@ -238,6 +261,22 @@ class DownloadManager:
             await progress_message.delete()
         except TelegramAPIError:
             logger.debug("Cached progress message could not be deleted")
+        elapsed = time.monotonic() - started
+        audit_event(
+            "download_finished",
+            download_id=download_id,
+            chat_id=chat_id,
+            source=source,
+            source_media_id=source_media_id,
+            media_kind=media_kind,
+            option=option_key,
+            title=title,
+            status=DownloadStatus.COMPLETED,
+            outcome="cache_hit",
+            file_count=1,
+            total_bytes=cached.file_size,
+            duration_ms=round(elapsed * 1000),
+        )
         return True
 
     async def try_cached_publication(
@@ -260,6 +299,14 @@ class DownloadManager:
                 source_media_id=source_media_id,
             )
             if manifest is None:
+                audit_event(
+                    "download_cache_miss",
+                    download_id=download_id,
+                    chat_id=chat_id,
+                    source=source,
+                    source_media_id=source_media_id,
+                    reason="manifest_missing",
+                )
                 return False
             parts = manifest.parts
             identities = {(part.media_kind, part.key) for part in parts}
@@ -269,6 +316,16 @@ class DownloadManager:
                 identities=identities,
             )
         if len(cached) != len(parts):
+            audit_event(
+                "download_cache_miss",
+                download_id=download_id,
+                chat_id=chat_id,
+                source=source,
+                source_media_id=source_media_id,
+                reason="incomplete_publication",
+                cached_parts=len(cached),
+                expected_parts=len(parts),
+            )
             return False
         caption = format_video_caption(
             title=title,
@@ -286,6 +343,13 @@ class DownloadManager:
                 caption=caption,
             )
             if delivery_failures:
+                audit_event(
+                    "download_cache_invalid",
+                    download_id=download_id,
+                    source=source,
+                    source_media_id=source_media_id,
+                    failed_parts=len(delivery_failures),
+                )
                 return False
         except InvalidCachedPartError as error:
             invalid = next(
@@ -295,6 +359,13 @@ class DownloadManager:
             if invalid is not None:
                 async with self.database.session() as session:
                     await MediaCacheRepository(session).delete(invalid.id)
+            audit_event(
+                "download_cache_invalid",
+                download_id=download_id,
+                source=source,
+                source_media_id=source_media_id,
+                part_key=error.part_key,
+            )
             return False
         async with self.database.session() as session:
             repository = MediaCacheRepository(session)
@@ -311,6 +382,20 @@ class DownloadManager:
             await progress_message.delete()
         except TelegramAPIError:
             logger.debug("Cached publication progress message could not be deleted")
+        elapsed = time.monotonic() - started
+        audit_event(
+            "download_finished",
+            download_id=download_id,
+            chat_id=chat_id,
+            source=source,
+            source_media_id=source_media_id,
+            title=title,
+            status=DownloadStatus.COMPLETED,
+            outcome="cache_hit",
+            file_count=len(cached),
+            total_bytes=sum(item.file_size or 0 for item in cached.values()),
+            duration_ms=round(elapsed * 1000),
+        )
         return True
 
     async def run(
@@ -333,6 +418,17 @@ class DownloadManager:
         started = time.monotonic()
         job_dir: Path | None = None
         reporter = ProgressReporter(progress_message, self.settings.progress_update_seconds)
+        audit_event(
+            "download_started",
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            download_id=download_id,
+            source=source,
+            source_media_id=source_media_id,
+            media_kind=media_kind,
+            option=option_key,
+            title=title,
+        )
         try:
             async with self.database.session() as session:
                 channels = await ChannelRepository(session).active()
@@ -342,6 +438,13 @@ class DownloadManager:
                 await reporter.update(
                     "Для загрузки необходимо оставаться подписанным на обязательные каналы.",
                     force=True,
+                )
+                audit_event(
+                    "download_finished",
+                    telegram_user_id=telegram_user_id,
+                    download_id=download_id,
+                    status=DownloadStatus.CANCELLED,
+                    outcome="subscription_missing",
                 )
                 return
 
@@ -364,6 +467,15 @@ class DownloadManager:
                         source.value,
                         failed.value,
                         following.value,
+                    )
+                    audit_event(
+                        "download_backend_fallback",
+                        telegram_user_id=telegram_user_id,
+                        download_id=download_id,
+                        source=source,
+                        source_media_id=source_media_id,
+                        failed_backend=failed,
+                        next_backend=following,
                     )
 
                 prepared_parts: tuple[MediaPart, ...] = ()
@@ -410,6 +522,19 @@ class DownloadManager:
                             source_media_id=source_media_id,
                             identities=identities,
                         )
+                    audit_event(
+                        "download_prepared",
+                        telegram_user_id=telegram_user_id,
+                        download_id=download_id,
+                        source=source,
+                        source_media_id=source_media_id,
+                        part_count=len(prepared_parts),
+                        cached_part_count=len(cached_parts),
+                        parts=",".join(
+                            f"{part.position}:{part.media_kind.value}:{part.key}"
+                            for part in prepared_parts
+                        ),
+                    )
                     validator = getattr(self.telegram_files, "validate_cached", None)
                     if validator is not None:
                         for identity, cached_item in tuple(cached_parts.items()):
@@ -444,6 +569,16 @@ class DownloadManager:
                     on_prepared,
                 )
                 package = result.package
+                audit_event(
+                    "download_backend_completed",
+                    telegram_user_id=telegram_user_id,
+                    download_id=download_id,
+                    source=source,
+                    source_media_id=source_media_id,
+                    backend=result.backend,
+                    artifact_count=len(package.artifacts),
+                    failure_count=len(package.failures),
+                )
                 if not prepared_parts:
                     prepared_parts = tuple(
                         MediaPart(
@@ -509,6 +644,21 @@ class DownloadManager:
                         ),
                         force=True,
                     )
+                    audit_event(
+                        "download_finished",
+                        telegram_user_id=telegram_user_id,
+                        download_id=download_id,
+                        source=source,
+                        source_media_id=source_media_id,
+                        backend=result.backend,
+                        status=(
+                            DownloadStatus.TOO_LARGE if all_too_large else DownloadStatus.FAILED
+                        ),
+                        outcome="no_deliverable_artifacts",
+                        failed_part_count=len(failures),
+                        total_bytes=file_size,
+                        duration_ms=round((time.monotonic() - started) * 1000),
+                    )
                     return
                 await self._status(download_id, DownloadStatus.UPLOADING, file_size=file_size)
                 await reporter.update("📤 Отправляю в Telegram...", force=True)
@@ -528,6 +678,17 @@ class DownloadManager:
                     continue_on_error=True,
                 )
                 failures.extend(delivery_failures)
+                for upload in upload_results:
+                    audit_event(
+                        "download_part_sent",
+                        telegram_user_id=telegram_user_id,
+                        chat_id=chat_id,
+                        download_id=download_id,
+                        part_key=upload.part_key,
+                        media_kind=upload.media_kind,
+                        cache_hit=(upload.media_kind, upload.part_key) in cached_parts,
+                        sent_as_document=upload.sent_as_document,
+                    )
                 if not upload_results:
                     await self._status(
                         download_id,
@@ -536,6 +697,18 @@ class DownloadManager:
                         processing_seconds=time.monotonic() - started,
                     )
                     await reporter.update("❌ Не удалось отправить файл в Telegram.", force=True)
+                    audit_event(
+                        "download_finished",
+                        level=logging.ERROR,
+                        telegram_user_id=telegram_user_id,
+                        download_id=download_id,
+                        source=source,
+                        source_media_id=source_media_id,
+                        backend=result.backend,
+                        status=DownloadStatus.FAILED,
+                        outcome="telegram_delivery_failed",
+                        duration_ms=round((time.monotonic() - started) * 1000),
+                    )
                     return
                 new_results = [
                     upload
@@ -570,6 +743,25 @@ class DownloadManager:
                         backend=result.backend,
                     )
                     await UserRepository(session).increment_downloads(user_id)
+                audit_event(
+                    "download_finished",
+                    telegram_user_id=telegram_user_id,
+                    chat_id=chat_id,
+                    download_id=download_id,
+                    source=source,
+                    source_media_id=source_media_id,
+                    media_kind=media_kind,
+                    option=option_key,
+                    title=title,
+                    backend=result.backend,
+                    status=DownloadStatus.COMPLETED,
+                    outcome="partial" if failures else "success",
+                    file_count=len(upload_results),
+                    cached_part_count=len(cached_parts),
+                    failed_part_count=len(failures),
+                    total_bytes=file_size,
+                    duration_ms=round(elapsed * 1000),
+                )
                 if failures:
                     unavailable = ", ".join(
                         dict.fromkeys(
@@ -601,6 +793,17 @@ class DownloadManager:
             await reporter.update(
                 "⌛ Загрузка заняла слишком много времени и была остановлена.", force=True
             )
+            audit_event(
+                "download_finished",
+                level=logging.ERROR,
+                telegram_user_id=telegram_user_id,
+                download_id=download_id,
+                source=source,
+                source_media_id=source_media_id,
+                status=DownloadStatus.TIMEOUT,
+                outcome="timeout",
+                duration_ms=round((time.monotonic() - started) * 1000),
+            )
         except asyncio.CancelledError:
             await asyncio.shield(
                 self._status(
@@ -609,6 +812,16 @@ class DownloadManager:
                     error_type="shutdown",
                     processing_seconds=time.monotonic() - started,
                 )
+            )
+            audit_event(
+                "download_finished",
+                telegram_user_id=telegram_user_id,
+                download_id=download_id,
+                source=source,
+                source_media_id=source_media_id,
+                status=DownloadStatus.CANCELLED,
+                outcome="shutdown",
+                duration_ms=round((time.monotonic() - started) * 1000),
             )
             raise
         except BackendError as error:
@@ -632,6 +845,17 @@ class DownloadManager:
                     "Выберите более низкое качество.",
                     force=True,
                 )
+                audit_event(
+                    "download_finished",
+                    level=logging.ERROR,
+                    telegram_user_id=telegram_user_id,
+                    download_id=download_id,
+                    source=source,
+                    source_media_id=source_media_id,
+                    status=DownloadStatus.TOO_LARGE,
+                    outcome=error.kind,
+                    duration_ms=round((time.monotonic() - started) * 1000),
+                )
                 return
             await self._status(
                 download_id,
@@ -640,6 +864,17 @@ class DownloadManager:
                 processing_seconds=time.monotonic() - started,
             )
             await reporter.update("❌ Не удалось скачать видео. Попробуйте позже.", force=True)
+            audit_event(
+                "download_finished",
+                level=logging.ERROR,
+                telegram_user_id=telegram_user_id,
+                download_id=download_id,
+                source=source,
+                source_media_id=source_media_id,
+                status=DownloadStatus.FAILED,
+                outcome=f"backend_{error.kind.value}",
+                duration_ms=round((time.monotonic() - started) * 1000),
+            )
         except TelegramAPIError:
             logger.exception("Telegram upload failed for download_id=%s", download_id)
             await self._status(
@@ -649,6 +884,17 @@ class DownloadManager:
                 processing_seconds=time.monotonic() - started,
             )
             await reporter.update("❌ Не удалось отправить файл в Telegram.", force=True)
+            audit_event(
+                "download_finished",
+                level=logging.ERROR,
+                telegram_user_id=telegram_user_id,
+                download_id=download_id,
+                source=source,
+                source_media_id=source_media_id,
+                status=DownloadStatus.FAILED,
+                outcome="telegram_api",
+                duration_ms=round((time.monotonic() - started) * 1000),
+            )
         except Exception:
             logger.exception("Unexpected download failure for download_id=%s", download_id)
             await self._status(
@@ -658,6 +904,17 @@ class DownloadManager:
                 processing_seconds=time.monotonic() - started,
             )
             await reporter.update("❌ Не удалось скачать видео. Попробуйте позже.", force=True)
+            audit_event(
+                "download_finished",
+                level=logging.ERROR,
+                telegram_user_id=telegram_user_id,
+                download_id=download_id,
+                source=source,
+                source_media_id=source_media_id,
+                status=DownloadStatus.FAILED,
+                outcome="internal",
+                duration_ms=round((time.monotonic() - started) * 1000),
+            )
         finally:
             if job_dir is not None:
                 await asyncio.shield(self.storage.remove_job(job_dir))
@@ -789,3 +1046,4 @@ class DownloadManager:
     ) -> None:
         async with self.database.session() as session:
             await DownloadRepository(session).set_status(download_id, status, **values)  # type: ignore[arg-type]
+        audit_event("download_status_changed", download_id=download_id, status=status, **values)
