@@ -15,7 +15,7 @@ from app.services.media.backends.base import (
     PreparedMedia,
 )
 from app.services.media.downloader import ProgressCallback
-from app.services.media.models import MediaSource
+from app.services.media.models import MediaPackage, MediaSource
 
 FallbackCallback = Callable[[DownloadBackend, DownloadBackend], Awaitable[None]]
 PreparedCallback = Callable[[PreparedMedia], Awaitable[frozenset[str]]]
@@ -53,6 +53,16 @@ class MediaBackendRouter:
                     job_dir,
                     progress,
                 )
+                if index + 1 < len(backends):
+                    package = await self._recover_failed_parts(
+                        package=package,
+                        request=request,
+                        following=backends[index + 1],
+                        job_dir=job_dir,
+                        progress=progress,
+                        on_fallback=on_fallback,
+                        current=backend.name,
+                    )
                 return BackendResult(package=package, backend=backend.name)
             except BackendError as exc:
                 has_fallback = index + 1 < len(backends)
@@ -63,6 +73,64 @@ class MediaBackendRouter:
                 await on_fallback(backend.name, following.name)
         raise BackendError(
             "Backend chain завершилась без результата", kind=BackendErrorKind.RETRYABLE
+        )
+
+    @staticmethod
+    async def _recover_failed_parts(
+        *,
+        package: MediaPackage,
+        request: MediaDownloadRequest,
+        following: MediaBackend,
+        job_dir: Path,
+        progress: ProgressCallback,
+        on_fallback: FallbackCallback,
+        current: DownloadBackend,
+    ) -> MediaPackage:
+        recoverable_keys = frozenset(
+            failure.part_key
+            for failure in package.failures
+            if failure.error_kind in {BackendErrorKind.RETRYABLE, BackendErrorKind.UNSUPPORTED}
+        )
+        if not recoverable_keys:
+            return package
+
+        try:
+            prepared = await following.prepare(request)
+        except BackendError:
+            return package
+        available_keys = frozenset(part.key for part in prepared.parts)
+        include_keys = recoverable_keys & available_keys
+        if not include_keys:
+            return package
+
+        await on_fallback(current, following.name)
+        try:
+            fallback_package = await following.download_prepared(
+                prepared,
+                include_keys,
+                job_dir,
+                progress,
+            )
+        except BackendError:
+            return package
+
+        fallback_artifacts = tuple(
+            artifact for artifact in fallback_package.artifacts if artifact.part_key in include_keys
+        )
+        replacement_keys = {artifact.part_key for artifact in fallback_artifacts}
+        replacement_keys.update(
+            failure.part_key
+            for failure in fallback_package.failures
+            if failure.part_key in include_keys
+        )
+        failures = tuple(
+            failure for failure in package.failures if failure.part_key not in replacement_keys
+        ) + tuple(
+            failure for failure in fallback_package.failures if failure.part_key in include_keys
+        )
+        return MediaPackage(
+            artifacts=package.artifacts + fallback_artifacts,
+            failures=failures,
         )
 
     @staticmethod

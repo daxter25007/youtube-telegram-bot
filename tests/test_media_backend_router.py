@@ -7,6 +7,7 @@ from app.services.media.backends.base import (
     BackendErrorKind,
     DownloadBackend,
     MediaDownloadRequest,
+    MediaPartFailure,
     PreparedMedia,
 )
 from app.services.media.backends.router import MediaBackendRouter
@@ -28,11 +29,13 @@ class FakeBackend:
         result: MediaPackage | None = None,
         error_kind: BackendErrorKind | None = None,
         create_partial: bool = False,
+        parts: tuple[MediaPart, ...] | None = None,
     ) -> None:
         self.name = name
         self.result = result
         self.error_kind = error_kind
         self.create_partial = create_partial
+        self.parts = parts or (MediaPart(key="video", media_kind=MediaKind.VIDEO, position=0),)
         self.prepare_calls = 0
         self.download_calls = 0
         self.include_keys: frozenset[str] = frozenset()
@@ -42,7 +45,7 @@ class FakeBackend:
         self.prepare_calls += 1
         return PreparedMedia(
             request=request,
-            parts=(MediaPart(key="video", media_kind=MediaKind.VIDEO, position=0),),
+            parts=self.parts,
         )
 
     async def download_prepared(self, prepared, include_keys, job_dir, progress):
@@ -160,3 +163,70 @@ async def test_non_retryable_backend_error_does_not_fallback(
 
     assert raised.value.kind is kind
     assert ytdlp.prepare_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_partial_cobalt_result_recovers_only_failed_audio_with_ytdlp(
+    tmp_path: Path,
+) -> None:
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"video")
+    audio_path = tmp_path / "audio.m4a"
+    audio_path.write_bytes(b"audio")
+    parts = (
+        MediaPart(key="video", media_kind=MediaKind.VIDEO, position=0),
+        MediaPart(key="audio", media_kind=MediaKind.AUDIO, position=1),
+    )
+    cobalt = FakeBackend(
+        DownloadBackend.COBALT,
+        parts=parts,
+        result=MediaPackage(
+            artifacts=(
+                MediaArtifact(
+                    path=video_path,
+                    media_kind=MediaKind.VIDEO,
+                    part_key="video",
+                ),
+            ),
+            failures=(
+                MediaPartFailure(
+                    part_key="audio",
+                    media_kind=MediaKind.AUDIO,
+                    error_kind=BackendErrorKind.RETRYABLE,
+                ),
+            ),
+        ),
+    )
+    ytdlp = FakeBackend(
+        DownloadBackend.YTDLP,
+        parts=parts,
+        result=MediaPackage(
+            artifacts=(
+                MediaArtifact(
+                    path=audio_path,
+                    media_kind=MediaKind.AUDIO,
+                    part_key="audio",
+                ),
+            )
+        ),
+    )
+    fallbacks: list[tuple[DownloadBackend, DownloadBackend]] = []
+
+    async def on_fallback(current: DownloadBackend, following: DownloadBackend) -> None:
+        fallbacks.append((current, following))
+
+    router = MediaBackendRouter({MediaSource.PINTEREST: (cobalt, ytdlp)})
+    result = await router.download(
+        media_request(MediaSource.PINTEREST),
+        tmp_path,
+        ignore_progress,
+        on_fallback,
+        all_parts,
+    )
+
+    assert result.backend is DownloadBackend.COBALT
+    assert [artifact.part_key for artifact in result.package.artifacts] == ["video", "audio"]
+    assert result.package.failures == ()
+    assert ytdlp.include_keys == frozenset({"audio"})
+    assert ytdlp.partial_seen_on_entry is False
+    assert fallbacks == [(DownloadBackend.COBALT, DownloadBackend.YTDLP)]
