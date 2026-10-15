@@ -27,4 +27,5 @@ def test_log_viewer_page_has_filters_and_safe_text_rendering() -> None:
     assert "Поиск по журналу" in INDEX_HTML
     assert "Все уровни" in INDEX_HTML
     assert "textContent" in INDEX_HTML
+    assert "shown.join(String.fromCharCode(10))" in INDEX_HTML
     assert "innerHTML" not in INDEX_HTML

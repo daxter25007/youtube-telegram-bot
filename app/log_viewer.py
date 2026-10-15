@@ -83,7 +83,8 @@ INDEX_HTML = """<!doctype html>
       const search = el("search").value.toLowerCase();
       const shown = state.entries.filter(line => (!level || line.includes(` ${level} `)) &&
         (!search || line.toLowerCase().includes(search)));
-      el("output").textContent = shown.join("\n") || "Нет строк по выбранному фильтру.";
+      el("output").textContent =
+        shown.join(String.fromCharCode(10)) || "Нет строк по выбранному фильтру.";
       if (el("autoscroll").checked) el("output").scrollTop = el("output").scrollHeight;
     }
 
