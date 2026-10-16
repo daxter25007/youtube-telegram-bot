@@ -283,7 +283,9 @@ async def receive_url(
             chat_id=chat_id,
             reason="invalid_url",
         )
-        await message.answer("❌ Отправьте корректную ссылку YouTube, TikTok или Instagram.")
+        await message.answer(
+            "❌ Отправьте корректную ссылку YouTube, TikTok, Instagram, Pinterest или VK."
+        )
         return
     audit_event(
         "media_link_received",

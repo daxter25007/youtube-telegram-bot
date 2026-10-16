@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "youtube-telegram-bot"
 version = "1.0.0"
-description = "Telegram bot for downloading YouTube, TikTok, Instagram, and Pinterest media"
+description = "Telegram bot for downloading YouTube, TikTok, Instagram, Pinterest, and VK media"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

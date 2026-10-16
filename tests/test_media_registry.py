@@ -78,3 +78,4 @@ def test_registry_rejects_unsafe_or_non_video_urls(registry: MediaRegistry, url:
 def test_registry_returns_adapter_for_source(registry: MediaRegistry) -> None:
     assert registry.adapter_for(MediaSource.YOUTUBE).source is MediaSource.YOUTUBE
     assert registry.adapter_for(MediaSource.TIKTOK).source is MediaSource.TIKTOK
+    assert registry.adapter_for(MediaSource.VK).source is MediaSource.VK

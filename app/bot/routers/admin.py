@@ -43,6 +43,7 @@ def _download_summary_line(download: Download) -> str:
         MediaSource.TIKTOK: "TikTok",
         MediaSource.INSTAGRAM: "Instagram",
         MediaSource.PINTEREST: "Pinterest",
+        MediaSource.VK: "VK",
     }[download.source]
     if download.requested_quality is not None:
         option = f"{download.requested_quality}p"

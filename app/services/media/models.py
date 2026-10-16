@@ -10,6 +10,7 @@ class MediaSource(StrEnum):
     TIKTOK = "tiktok"
     INSTAGRAM = "instagram"
     PINTEREST = "pinterest"
+    VK = "vk"
 
 
 class MediaKind(StrEnum):

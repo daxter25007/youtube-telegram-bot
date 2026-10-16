@@ -6,6 +6,7 @@ from app.services.media.adapters.base import MediaAdapter
 from app.services.media.adapters.instagram import InstagramAdapter
 from app.services.media.adapters.pinterest import PinterestAdapter
 from app.services.media.adapters.tiktok import TikTokAdapter
+from app.services.media.adapters.vk import VKAdapter
 from app.services.media.adapters.youtube import YouTubeAdapter
 from app.services.media.models import MediaSource, ParsedMediaUrl
 
@@ -16,7 +17,9 @@ class MediaRegistry:
 
     @classmethod
     def default(cls) -> MediaRegistry:
-        return cls((YouTubeAdapter(), TikTokAdapter(), InstagramAdapter(), PinterestAdapter()))
+        return cls(
+            (YouTubeAdapter(), TikTokAdapter(), InstagramAdapter(), PinterestAdapter(), VKAdapter())
+        )
 
     def parse(self, text: str) -> ParsedMediaUrl | None:
         for adapter in self._adapters.values():

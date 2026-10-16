@@ -51,6 +51,19 @@ def test_admin_download_summary_names_pinterest_source() -> None:
     )
 
 
+def test_admin_download_summary_names_vk_source() -> None:
+    download = SimpleNamespace(
+        id=10,
+        source=MediaSource.VK,
+        requested_option="vk_video",
+        requested_quality=None,
+        status=DownloadStatus.COMPLETED,
+        backend=DownloadBackend.YTDLP,
+    )
+
+    assert _download_summary_line(download) == "#10 VK · vk video · ytdlp — completed"
+
+
 class FakeCobaltClient:
     def __init__(self, healthy: bool) -> None:
         self.healthy = healthy

@@ -495,6 +495,40 @@ async def test_pinterest_link_is_automatically_submitted_to_queue(session_and_us
 
 
 @pytest.mark.asyncio
+async def test_vk_clip_is_automatically_submitted_to_ytdlp_queue(session_and_user) -> None:
+    session, user = session_and_user
+    message = FakeIncomingMessage("https://vk.com/clip-123456_789012")
+    queue = FakeQueue()
+    manager = FakeCacheMissDownloadManager()
+    metadata_service = FakeMetadataService()
+
+    await receive_url(
+        message=message,  # type: ignore[arg-type]
+        bot=object(),  # type: ignore[arg-type]
+        session=session,
+        db_user=user,
+        settings=settings(),  # type: ignore[arg-type]
+        media_registry=MediaRegistry.default(),
+        metadata_service=metadata_service,  # type: ignore[arg-type]
+        rate_limiter=FakeRateLimiter(),  # type: ignore[arg-type]
+        subscription_service=FakeSubscriptions(),  # type: ignore[arg-type]
+        download_queue=queue,  # type: ignore[arg-type]
+        download_manager=manager,  # type: ignore[arg-type]
+    )
+
+    assert len(queue.submissions) == 1
+    download = await session.scalar(select(Download))
+    assert download is not None
+    assert download.source is MediaSource.VK
+    assert download.source_url == "https://vk.com/clip-123456_789012"
+    assert download.requested_option == "vk_video"
+    assert download.requested_quality is None
+    assert manager.cache_kwargs["source"] is MediaSource.VK
+    assert manager.cache_kwargs["media_kind"] is MediaKind.VIDEO
+    assert metadata_service.calls == []
+
+
+@pytest.mark.asyncio
 async def test_tiktok_short_link_gets_stable_internal_media_id(session_and_user) -> None:
     session, user = session_and_user
     message = FakeIncomingMessage("https://vm.tiktok.com/ZM1234abc/")
