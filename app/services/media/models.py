@@ -7,10 +7,14 @@ from pathlib import Path
 
 class MediaSource(StrEnum):
     YOUTUBE = "youtube"
+    RUTUBE = "rutube"
     TIKTOK = "tiktok"
     INSTAGRAM = "instagram"
     PINTEREST = "pinterest"
     VK = "vk"
+
+
+QUALITY_SELECTION_SOURCES = frozenset({MediaSource.YOUTUBE, MediaSource.RUTUBE})
 
 
 class MediaKind(StrEnum):

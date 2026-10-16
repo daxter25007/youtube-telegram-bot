@@ -30,6 +30,7 @@ from app.services.media.backends.base import (
 )
 from app.services.media.backends.router import MediaBackendRouter
 from app.services.media.models import (
+    QUALITY_SELECTION_SOURCES,
     DownloadPolicy,
     MediaArtifact,
     MediaKind,
@@ -725,7 +726,9 @@ class DownloadManager:
                             source_media_id=source_media_id,
                             media_kind=upload.media_kind,
                             requested_option=(
-                                option_key if source is MediaSource.YOUTUBE else upload.part_key
+                                option_key
+                                if source in QUALITY_SELECTION_SOURCES
+                                else upload.part_key
                             ),
                             telegram_file_id=upload.file_id,
                             telegram_file_unique_id=upload.file_unique_id,

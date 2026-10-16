@@ -27,6 +27,43 @@ def test_registry_parses_youtube_urls(registry: MediaRegistry, url: str, video_i
 
 
 @pytest.mark.parametrize(
+    "url",
+    [
+        "https://rutube.ru/video/3eac3b4561676c17df9132a9a1e62e3e/",
+        "https://www.rutube.ru/shorts/3eac3b4561676c17df9132a9a1e62e3e/",
+        "https://rutube.ru/play/embed/3eac3b4561676c17df9132a9a1e62e3e",
+        "https://m.rutube.ru/embed/3eac3b4561676c17df9132a9a1e62e3e",
+    ],
+)
+def test_registry_parses_rutube_urls(registry: MediaRegistry, url: str) -> None:
+    parsed = registry.parse(url)
+
+    assert parsed is not None
+    assert parsed.source is MediaSource.RUTUBE
+    assert parsed.media_id == "3eac3b4561676c17df9132a9a1e62e3e"
+    assert parsed.normalized_url == ("https://rutube.ru/video/3eac3b4561676c17df9132a9a1e62e3e/")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://rutube.ru/video/3eac3b4561676c17df9132a9a1e62e3e/",
+        "https://user:pass@rutube.ru/video/3eac3b4561676c17df9132a9a1e62e3e/",
+        "https://rutube.ru:444/video/3eac3b4561676c17df9132a9a1e62e3e/",
+        "https://rutube.ru.evil.test/video/3eac3b4561676c17df9132a9a1e62e3e/",
+        "https://rutube.ru/channel/12345/",
+        "https://rutube.ru/video/private/3eac3b4561676c17df9132a9a1e62e3e/?p=secret",
+        "https://rutube.ru/live/video/3eac3b4561676c17df9132a9a1e62e3e/",
+        "https://rutube.ru/video/not-a-video-id/",
+    ],
+)
+def test_registry_rejects_unsupported_or_unsafe_rutube_urls(
+    registry: MediaRegistry, url: str
+) -> None:
+    assert registry.parse(url) is None
+
+
+@pytest.mark.parametrize(
     ("url", "media_id"),
     [
         ("https://www.tiktok.com/@creator/video/7461234567890123456", "7461234567890123456"),
@@ -77,5 +114,6 @@ def test_registry_rejects_unsafe_or_non_video_urls(registry: MediaRegistry, url:
 
 def test_registry_returns_adapter_for_source(registry: MediaRegistry) -> None:
     assert registry.adapter_for(MediaSource.YOUTUBE).source is MediaSource.YOUTUBE
+    assert registry.adapter_for(MediaSource.RUTUBE).source is MediaSource.RUTUBE
     assert registry.adapter_for(MediaSource.TIKTOK).source is MediaSource.TIKTOK
     assert registry.adapter_for(MediaSource.VK).source is MediaSource.VK

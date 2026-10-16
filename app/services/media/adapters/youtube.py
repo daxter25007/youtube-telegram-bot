@@ -22,6 +22,8 @@ VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 class YouTubeAdapter:
     source = MediaSource.YOUTUBE
     automatic_option: str | None = None
+    platform_name = "YouTube"
+    fallback_title = "YouTube video"
 
     def initial_metadata(self, parsed: ParsedMediaUrl) -> MediaMetadata | None:
         return None
@@ -65,7 +67,8 @@ class YouTubeAdapter:
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise MetadataError(
-                "Некорректные метаданные YouTube", kind=MetadataErrorKind.UNAVAILABLE
+                f"Некорректные метаданные {self.platform_name}",
+                kind=MetadataErrorKind.UNAVAILABLE,
             ) from exc
         if not qualities:
             raise MetadataError("Нет доступных форматов видео", kind=MetadataErrorKind.UNAVAILABLE)
@@ -95,7 +98,7 @@ class YouTubeAdapter:
             source=self.source,
             media_id=media_id,
             source_url=parsed.normalized_url,
-            title=str(raw.get("title") or "YouTube video")[:512],
+            title=str(raw.get("title") or self.fallback_title)[:512],
             duration=duration,
             thumbnail=str(raw["thumbnail"]) if raw.get("thumbnail") else None,
             media_kind=MediaKind.VIDEO,
@@ -112,11 +115,11 @@ class YouTubeAdapter:
             )
         prefix = "video_"
         if not option_key.startswith(prefix):
-            raise ValueError("Неизвестный вариант YouTube")
+            raise ValueError(f"Неизвестный вариант {self.platform_name}")
         try:
             height = int(option_key.removeprefix(prefix))
         except ValueError as exc:
-            raise ValueError("Некорректное качество YouTube") from exc
+            raise ValueError(f"Некорректное качество {self.platform_name}") from exc
         return DownloadPolicy(format_selector=build_format_selector(height))
 
 

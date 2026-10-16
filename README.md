@@ -1,6 +1,6 @@
-# YouTube + TikTok + Instagram + Pinterest + VK → Telegram Bot
+# YouTube + Rutube + TikTok + Instagram + Pinterest + VK → Telegram Bot
 
-Готовый к эксплуатации Telegram-бот на Python 3.12, который проверяет подписку на обязательные каналы, получает метаданные YouTube, скачивает медиа через `yt-dlp`, self-hosted Cobalt и `ffmpeg`, а затем отправляет его через локальный Telegram Bot API Server. Для YouTube пользователь выбирает качество видео или M4A-аудио. Для TikTok, Instagram и Pinterest бот автоматически отправляет доступные видео, фото, GIF-анимации или карусели и, когда она есть, отдельную аудиодорожку. Видео VK и VK Клипы скачиваются автоматически через `yt-dlp`.
+Готовый к эксплуатации Telegram-бот на Python 3.12, который проверяет подписку на обязательные каналы, получает метаданные и скачивает медиа через `yt-dlp`, self-hosted Cobalt и `ffmpeg`, а затем отправляет его через локальный Telegram Bot API Server. Для YouTube и Rutube пользователь выбирает качество видео или M4A-аудио. Для TikTok, Instagram и Pinterest бот автоматически отправляет доступные видео, фото, GIF-анимации или карусели и, когда она есть, отдельную аудиодорожку. Видео VK и VK Клипы скачиваются автоматически через `yt-dlp`.
 
 > Используйте загрузку только для контента, который вы вправе скачивать и распространять. Учитывайте правила исходной площадки, Telegram и законодательство вашей страны.
 
@@ -12,7 +12,7 @@ Telegram user
 Telegram Local Bot API Server (--local, internal port 8081)
     ↓
 aiogram bot → PostgreSQL (users, requests, channels, statistics, backend результата)
-    ├─ YouTube → yt-dlp → ffmpeg merge/remux
+    ├─ YouTube / Rutube → yt-dlp → ffmpeg merge/remux
     ├─ VK / VK Клипы → yt-dlp → ffmpeg remux
     └─ TikTok / Instagram / Pinterest → Cobalt (основной) ─┐
                               └→ yt-dlp (fallback) ─┤
@@ -31,19 +31,20 @@ Telegram Local Bot API Server → Telegram user
 - `telegram-bot-api` — поддерживаемый образ `aiogram/telegram-bot-api`, собранный из официального `tdlib/telegram-bot-api`, режим local; multi-arch digest закреплён в Compose;
 - `postgres` — PostgreSQL 17.
 
-PostgreSQL, Local Bot API и Cobalt не публикуются на хост. Они доступны только внутри Docker network. Контейнер бота работает не от root. Недоступность Cobalt не блокирует запуск бота и YouTube: для TikTok, Instagram и Pinterest менеджер автоматически попробует yt-dlp в рамках того же общего таймаута.
+PostgreSQL, Local Bot API и Cobalt не публикуются на хост. Они доступны только внутри Docker network. Контейнер бота работает не от root. Недоступность Cobalt не блокирует запуск бота, YouTube и Rutube: для TikTok, Instagram и Pinterest менеджер автоматически попробует yt-dlp в рамках того же общего таймаута.
 
 ## Возможности
 
 - URL `youtube.com/watch`, `youtu.be`, `youtube.com/shorts` с жёстким whitelist хостов;
+- публичные видео и Shorts Rutube по ссылкам `/video/<id>`, `/shorts/<id>` и embed-ссылкам;
 - публичные TikTok-видео, фотографии и карусели по каноническим ссылкам и официальным коротким ссылкам `vm.tiktok.com` / `vt.tiktok.com`;
 - публичные Instagram Reels, одиночные публикации и смешанные фото/видео-карусели по ссылкам `/reel/`, `/reels/`, `/p/` и `/share/`;
 - публичные Pinterest Pins и Stories по ссылкам `/pin/<id>` и официальным коротким ссылкам `pin.it`;
 - публичные видео VK и VK Клипы по прямым ссылкам и ссылкам с параметром `z` на доменах `vk.com`, `vk.ru` и `vkvideo.ru`;
 - Cobalt как основной TikTok/Instagram/Pinterest-backend с потоковой записью сразу на диск и yt-dlp как автоматический fallback;
-- расширяемый реестр адаптеров для будущего добавления RuTube и других источников без изменения очереди и временного хранилища;
+- расширяемый реестр адаптеров для будущего добавления других источников без изменения очереди и временного хранилища;
 - 144p, 240p, 360p, 480p, 720p, 1080p, 1440p, 2160p — только когда формат существует и оценочный размер не превышает лимит;
-- отдельная кнопка YouTube `Только аудио` с результатом M4A;
+- отдельная кнопка YouTube и Rutube `Только аудио` с результатом M4A;
 - TikTok и Instagram-карусели отправляются по порядку альбомами до 10 фото/видео, а доступная аудиодорожка — отдельным сообщением;
 - Telegram `file_id`-кэш для каждого видео, аудио и фото; повторный полный запрос не скачивает публикацию заново;
 - предпочтение MP4/H.264 + M4A/AAC, fallback на лучший совместимый video/audio без hardcoded format ID;
@@ -212,6 +213,10 @@ docker compose exec bot sh -c 'tail -n 100 /app/logs/bot.log'
 Local Bot API официально поддерживает upload до 2000 MB и локальные пути. Рабочий лимит по умолчанию — `MAX_UPLOAD_MB=1950`, чтобы оставить запас. До скачивания варианты с заведомо слишком большой оценкой скрываются; после скачивания обязательно проверяется фактический `stat().st_size`. Файл больше лимита не отправляется.
 
 Один job хранится в `/shared-temp/jobs/<uuid>`. Название публикации не используется как путь. `shared-temp` монтируется read/write в bot и read-only в Bot API. Активные jobs защищены от periodic cleanup.
+
+### Ограничения Rutube
+
+Поддерживаются публичные одиночные видео и Shorts. Прямые эфиры, каналы, плейлисты и приватные ссылки не принимаются. Доступные кнопки качества зависят от вариантов, которые Rutube возвращает через `yt-dlp`; аудиокнопка извлекает M4A из выбранного медиапотока.
 
 ### Ограничения TikTok
 

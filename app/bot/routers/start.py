@@ -18,7 +18,7 @@ from app.utils.auth import is_admin
 router = Router(name="start")
 
 WELCOME_TEXT = (
-    "💙 <b>Привет! Я помогу скачать медиа с YouTube, TikTok, Instagram, Pinterest "
+    "💙 <b>Привет! Я помогу скачать медиа с YouTube, Rutube, TikTok, Instagram, Pinterest "
     "и VK.</b>\n\n"
     "💻 <b>Как пользоваться:</b>\n"
     "1. Откройте нужное видео или публикацию.\n"
@@ -26,7 +26,7 @@ WELCOME_TEXT = (
     "3. Отправьте ссылку этому боту.\n"
     "4. Выберите доступное качество.\n"
     "5. Дождитесь готового файла.\n\n"
-    "🔗 <b>Поддерживаются:</b> YouTube, Shorts, публичные публикации TikTok, "
+    "🔗 <b>Поддерживаются:</b> YouTube, Rutube и их Shorts, публичные публикации TikTok, "
     "Instagram Reels и посты, Pinterest Pins и Stories, видео VK и VK Клипы.\n\n"
     "Просто отправьте ссылку в чат 👇"
 )

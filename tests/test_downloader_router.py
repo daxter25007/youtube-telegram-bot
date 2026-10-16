@@ -65,7 +65,7 @@ class FakeMetadataService:
 
     async def fetch(self, parsed):
         self.calls.append(parsed)
-        if parsed.source is MediaSource.YOUTUBE:
+        if parsed.source in {MediaSource.YOUTUBE, MediaSource.RUTUBE}:
             options = (
                 DownloadOption(
                     key="video_720",
@@ -74,7 +74,7 @@ class FakeMetadataService:
                     height=720,
                 ),
             )
-            title = "YouTube example"
+            title = f"{parsed.source.value.title()} example"
         else:
             options = (
                 DownloadOption(
@@ -251,6 +251,45 @@ async def test_audio_selection_uses_option_media_kind(session_and_user) -> None:
 
 
 @pytest.mark.asyncio
+async def test_rutube_selection_records_requested_quality(session_and_user) -> None:
+    session, user = session_and_user
+    option = DownloadOption(
+        key="video_720",
+        label="720p",
+        media_kind=MediaKind.VIDEO,
+        height=720,
+    )
+    request = await DownloadRequestRepository(session).create(
+        user_id=user.id,
+        telegram_user_id=123,
+        source=MediaSource.RUTUBE,
+        media_kind=MediaKind.VIDEO,
+        source_url="https://rutube.ru/video/3eac3b4561676c17df9132a9a1e62e3e/",
+        source_media_id="3eac3b4561676c17df9132a9a1e62e3e",
+        metadata={"title": "Rutube example", "options": [option.as_dict()]},
+    )
+    await session.commit()
+
+    await _enqueue_option(
+        progress_message=FakeStatusMessage(),  # type: ignore[arg-type]
+        telegram_user_id=123,
+        request=request,
+        option=option,
+        session=session,
+        settings=settings(),  # type: ignore[arg-type]
+        media_registry=MediaRegistry.default(),
+        download_queue=FakeQueue(),  # type: ignore[arg-type]
+        download_manager=FakeCacheMissDownloadManager(),  # type: ignore[arg-type]
+        bot=object(),  # type: ignore[arg-type]
+    )
+
+    download = await session.scalar(select(Download))
+    assert download is not None
+    assert download.source is MediaSource.RUTUBE
+    assert download.requested_quality == 720
+
+
+@pytest.mark.asyncio
 async def test_youtube_link_creates_request_and_quality_callback(session_and_user) -> None:
     session, user = session_and_user
     message = FakeIncomingMessage("https://youtu.be/dQw4w9WgXcQ")
@@ -272,6 +311,34 @@ async def test_youtube_link_creates_request_and_quality_callback(session_and_use
     request = await session.scalar(select(DownloadRequest))
     assert request is not None
     assert request.source is MediaSource.YOUTUBE
+    button = message.status.reply_markup.inline_keyboard[0][0]
+    assert button.callback_data == f"media:{request.id}:video_720"
+
+
+@pytest.mark.asyncio
+async def test_rutube_link_creates_request_and_youtube_style_quality_callback(
+    session_and_user,
+) -> None:
+    session, user = session_and_user
+    message = FakeIncomingMessage("https://rutube.ru/video/3eac3b4561676c17df9132a9a1e62e3e/")
+
+    await receive_url(
+        message=message,  # type: ignore[arg-type]
+        bot=object(),  # type: ignore[arg-type]
+        session=session,
+        db_user=user,
+        settings=settings(),  # type: ignore[arg-type]
+        media_registry=MediaRegistry.default(),
+        metadata_service=FakeMetadataService(),  # type: ignore[arg-type]
+        rate_limiter=FakeRateLimiter(),  # type: ignore[arg-type]
+        subscription_service=FakeSubscriptions(),  # type: ignore[arg-type]
+        download_queue=FakeQueue(),  # type: ignore[arg-type]
+        download_manager=FakeCacheMissDownloadManager(),  # type: ignore[arg-type]
+    )
+
+    request = await session.scalar(select(DownloadRequest))
+    assert request is not None
+    assert request.source is MediaSource.RUTUBE
     button = message.status.reply_markup.inline_keyboard[0][0]
     assert button.callback_data == f"media:{request.id}:video_720"
 

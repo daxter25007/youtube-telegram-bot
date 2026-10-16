@@ -19,7 +19,12 @@ from app.database.repositories.requests import DownloadRequestRepository
 from app.services.download_manager import DownloadManager
 from app.services.media.errors import MetadataError, MetadataErrorKind
 from app.services.media.metadata import YtDlpMetadataService
-from app.services.media.models import DownloadOption, MediaKind, MediaSource
+from app.services.media.models import (
+    QUALITY_SELECTION_SOURCES,
+    DownloadOption,
+    MediaKind,
+    MediaSource,
+)
 from app.services.media.registry import MediaRegistry
 from app.services.queue import DownloadQueue, QueueClosedError, UserDownloadLimitError
 from app.services.rate_limit import SlidingWindowRateLimiter
@@ -108,7 +113,7 @@ async def _enqueue_option(
         source_url=request.source_url,
         video_title=title,
         requested_option=option.key,
-        requested_quality=(option.height if request.source is MediaSource.YOUTUBE else None),
+        requested_quality=(option.height if request.source in QUALITY_SELECTION_SOURCES else None),
         status=DownloadStatus.CREATED,
     )
     await DownloadRequestRepository(session).delete(request.id)
@@ -284,7 +289,7 @@ async def receive_url(
             reason="invalid_url",
         )
         await message.answer(
-            "❌ Отправьте корректную ссылку YouTube, TikTok, Instagram, Pinterest или VK."
+            "❌ Отправьте корректную ссылку YouTube, Rutube, TikTok, Instagram, Pinterest или VK."
         )
         return
     audit_event(

@@ -64,6 +64,19 @@ def test_admin_download_summary_names_vk_source() -> None:
     assert _download_summary_line(download) == "#10 VK · vk video · ytdlp — completed"
 
 
+def test_admin_download_summary_names_rutube_source_and_quality() -> None:
+    download = SimpleNamespace(
+        id=11,
+        source=MediaSource.RUTUBE,
+        requested_option="video_720",
+        requested_quality=720,
+        status=DownloadStatus.COMPLETED,
+        backend=DownloadBackend.YTDLP,
+    )
+
+    assert _download_summary_line(download) == "#11 Rutube · 720p · ytdlp — completed"
+
+
 class FakeCobaltClient:
     def __init__(self, healthy: bool) -> None:
         self.healthy = healthy

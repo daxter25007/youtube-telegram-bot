@@ -40,6 +40,7 @@ def _authorized(user_id: int, settings: Settings) -> bool:
 def _download_summary_line(download: Download) -> str:
     source = {
         MediaSource.YOUTUBE: "YouTube",
+        MediaSource.RUTUBE: "Rutube",
         MediaSource.TIKTOK: "TikTok",
         MediaSource.INSTAGRAM: "Instagram",
         MediaSource.PINTEREST: "Pinterest",

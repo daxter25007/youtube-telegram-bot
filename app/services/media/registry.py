@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from app.services.media.adapters.base import MediaAdapter
 from app.services.media.adapters.instagram import InstagramAdapter
 from app.services.media.adapters.pinterest import PinterestAdapter
+from app.services.media.adapters.rutube import RutubeAdapter
 from app.services.media.adapters.tiktok import TikTokAdapter
 from app.services.media.adapters.vk import VKAdapter
 from app.services.media.adapters.youtube import YouTubeAdapter
@@ -18,7 +19,14 @@ class MediaRegistry:
     @classmethod
     def default(cls) -> MediaRegistry:
         return cls(
-            (YouTubeAdapter(), TikTokAdapter(), InstagramAdapter(), PinterestAdapter(), VKAdapter())
+            (
+                YouTubeAdapter(),
+                RutubeAdapter(),
+                TikTokAdapter(),
+                InstagramAdapter(),
+                PinterestAdapter(),
+                VKAdapter(),
+            )
         )
 
     def parse(self, text: str) -> ParsedMediaUrl | None:

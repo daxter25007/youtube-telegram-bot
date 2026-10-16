@@ -170,6 +170,7 @@ async def run() -> int:
         backend_router = MediaBackendRouter(
             {
                 MediaSource.YOUTUBE: (ytdlp_backend,),
+                MediaSource.RUTUBE: (ytdlp_backend,),
                 MediaSource.TIKTOK: tuple(publication_backends),
                 MediaSource.INSTAGRAM: tuple(publication_backends),
                 MediaSource.PINTEREST: tuple(publication_backends),
