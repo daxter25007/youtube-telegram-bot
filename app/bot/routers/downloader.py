@@ -5,7 +5,7 @@ from typing import Any
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, LinkPreviewOptions, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards.quality import quality_keyboard
@@ -397,11 +397,18 @@ async def receive_url(
             )
         )
     await status_message.edit_text(
-        f"🎬 {metadata.title}\n\n⏱ {format_duration(metadata.duration)}\n\nВыберите качество:",
+        f"🎬 {metadata.title}\n\n🔗 {metadata.source_url}\n\n"
+        f"⏱ {format_duration(metadata.duration)}\n\nВыберите качество:",
         reply_markup=quality_keyboard(
             request.id,
             list(metadata.options),
             cached_option_keys=cached_option_keys,
+        ),
+        link_preview_options=LinkPreviewOptions(
+            is_disabled=False,
+            url=metadata.source_url,
+            prefer_large_media=True,
+            show_above_text=True,
         ),
     )
 

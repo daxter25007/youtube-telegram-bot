@@ -39,11 +39,13 @@ class FakeStatusMessage:
     def __init__(self) -> None:
         self.texts: list[str] = []
         self.reply_markup = None
+        self.link_preview_options = None
         self.chat = SimpleNamespace(id=123)
 
-    async def edit_text(self, text: str, reply_markup=None):
+    async def edit_text(self, text: str, reply_markup=None, link_preview_options=None):
         self.texts.append(text)
         self.reply_markup = reply_markup
+        self.link_preview_options = link_preview_options
         return self
 
 
@@ -305,6 +307,12 @@ async def test_youtube_link_creates_request_and_quality_callback(session_and_use
     request = await session.scalar(select(DownloadRequest))
     assert request is not None
     assert request.source is MediaSource.YOUTUBE
+    source_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    assert source_url in message.status.texts[-1]
+    assert message.status.link_preview_options.url == source_url
+    assert message.status.link_preview_options.is_disabled is False
+    assert message.status.link_preview_options.prefer_large_media is True
+    assert message.status.link_preview_options.show_above_text is True
     button = message.status.reply_markup.inline_keyboard[0][0]
     assert button.callback_data == f"media:{request.id}:video_720"
 
