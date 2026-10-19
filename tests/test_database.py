@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.database.base import Base
 from app.database.models import DownloadStatus, User
-from app.database.repositories.channels import ChannelRepository
 from app.database.repositories.downloads import DownloadRepository
 from app.database.repositories.requests import DownloadRequestRepository
 from app.services.media.models import MediaKind, MediaPart, MediaSource
@@ -44,16 +43,6 @@ async def test_repositories_and_request_ownership_ttl(session) -> None:
     assert await request_repo.get_owned_valid(request.id, 999, 30) is None
     future = datetime.now(UTC) + timedelta(minutes=31)
     assert await request_repo.get_owned_valid(request.id, 100, 30, now=future) is None
-
-    channel = await ChannelRepository(session).add(
-        chat_id=-100123,
-        username="@channel",
-        title="Channel",
-        invite_url="https://t.me/channel",
-    )
-    assert (await ChannelRepository(session).active())[0].id == channel.id
-    await ChannelRepository(session).toggle(channel.id)
-    assert await ChannelRepository(session).active() == []
 
     download = await DownloadRepository(session).create(
         user_id=user.id,

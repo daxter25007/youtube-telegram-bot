@@ -1,6 +1,6 @@
 # YouTube + Rutube + TikTok + Instagram + Pinterest + VK → Telegram Bot
 
-Готовый к эксплуатации Telegram-бот на Python 3.12, который проверяет подписку на обязательные каналы, получает метаданные и скачивает медиа через `yt-dlp`, self-hosted Cobalt и `ffmpeg`, а затем отправляет его через локальный Telegram Bot API Server. Для YouTube и Rutube пользователь выбирает качество видео или M4A-аудио. Для TikTok, Instagram и Pinterest бот автоматически отправляет доступные видео, фото, GIF-анимации или карусели и, когда она есть, отдельную аудиодорожку. Видео VK и VK Клипы скачиваются автоматически через `yt-dlp`.
+Готовый к эксплуатации Telegram-бот на Python 3.12, который получает метаданные и скачивает медиа через `yt-dlp`, self-hosted Cobalt и `ffmpeg`, а затем отправляет его через локальный Telegram Bot API Server. Для YouTube и Rutube пользователь выбирает качество видео или M4A-аудио. Для TikTok, Instagram и Pinterest бот автоматически отправляет доступные видео, фото, GIF-анимации или карусели и, когда она есть, отдельную аудиодорожку. Видео VK и VK Клипы скачиваются автоматически через `yt-dlp`.
 
 > Используйте загрузку только для контента, который вы вправе скачивать и распространять. Учитывайте правила исходной площадки, Telegram и законодательство вашей страны.
 
@@ -11,7 +11,7 @@ Telegram user
     ↓
 Telegram Local Bot API Server (--local, internal port 8081)
     ↓
-aiogram bot → PostgreSQL (users, requests, channels, statistics, backend результата)
+aiogram bot → PostgreSQL (users, requests, statistics, backend результата)
     ├─ YouTube / Rutube → yt-dlp → ffmpeg merge/remux
     ├─ VK / VK Клипы → yt-dlp → ffmpeg remux
     └─ TikTok / Instagram / Pinterest → Cobalt (основной) ─┐
@@ -51,7 +51,7 @@ PostgreSQL, Local Bot API и Cobalt не публикуются на хост. �
 - merge/remux через ffmpeg, `sendVideo` с `supports_streaming`, fallback на `sendDocument`;
 - очередь, глобальная параллельность и лимит одной активной загрузки на пользователя;
 - throttled progress, timeout и корректное завершение subprocess;
-- обязательные каналы, Telegram-админка, статистика SQL, мониторинг и просмотр логов;
+- Telegram-админка, статистика SQL, мониторинг и просмотр логов;
 - Alembic, pytest, ruff и secret scanning в GitHub Actions.
 
 ## Требования VPS
@@ -148,15 +148,11 @@ docker compose stop telegram-bot-api
 
 Проект не автоматизирует этот обратный переход: он требует осознанного управления endpoint и интервалом Telegram.
 
-## Обязательные каналы и админка
+## Админка
 
-1. Добавьте числовой Telegram ID в `ADMIN_IDS`, перезапустите bot.
-2. Отправьте `/admin` → `📢 Каналы` → `➕ Добавить`.
-3. Отправьте `@channel` или `-100xxxxxxxxxx`, проверьте карточку и нажмите `✅ Добавить`.
+Добавьте числовой Telegram ID в `ADMIN_IDS`, перезапустите bot и отправьте `/admin`.
 
-Для проверки подписки бот должен быть администратором канала. Для приватного канала ему также нужен доступ к invite link. Статусы `creator`, `administrator`, `member` считаются подпиской; `left` и `kicked` — нет. Изменения списка каналов начинают действовать немедленно.
-
-Админка также показывает пользователей, последние загрузки, агрегаты за день/7/30 дней,
+Админка показывает пользователей, агрегаты за день/7/30 дней,
 объём, средний размер и время, популярные качества и TOP-10 пользователей. Раздел
 `🩺 Мониторинг` проверяет PostgreSQL, Telegram API и Cobalt, показывает uptime, очередь,
 свободное место и число недавних предупреждений/ошибок. В Telegram-интерфейсе логи не

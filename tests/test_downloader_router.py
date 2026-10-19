@@ -102,11 +102,6 @@ class FakeRateLimiter:
         return True
 
 
-class FakeSubscriptions:
-    async def missing_channels(self, bot, user_id, channels):
-        return []
-
-
 class FakeQueue:
     def __init__(self) -> None:
         self.submissions = []
@@ -303,7 +298,6 @@ async def test_youtube_link_creates_request_and_quality_callback(session_and_use
         media_registry=MediaRegistry.default(),
         metadata_service=FakeMetadataService(),  # type: ignore[arg-type]
         rate_limiter=FakeRateLimiter(),  # type: ignore[arg-type]
-        subscription_service=FakeSubscriptions(),  # type: ignore[arg-type]
         download_queue=FakeQueue(),  # type: ignore[arg-type]
         download_manager=FakeCacheMissDownloadManager(),  # type: ignore[arg-type]
     )
@@ -331,7 +325,6 @@ async def test_rutube_link_creates_request_and_youtube_style_quality_callback(
         media_registry=MediaRegistry.default(),
         metadata_service=FakeMetadataService(),  # type: ignore[arg-type]
         rate_limiter=FakeRateLimiter(),  # type: ignore[arg-type]
-        subscription_service=FakeSubscriptions(),  # type: ignore[arg-type]
         download_queue=FakeQueue(),  # type: ignore[arg-type]
         download_manager=FakeCacheMissDownloadManager(),  # type: ignore[arg-type]
     )
@@ -369,7 +362,6 @@ async def test_youtube_quality_button_marks_cached_option(session_and_user) -> N
         media_registry=MediaRegistry.default(),
         metadata_service=FakeMetadataService(),  # type: ignore[arg-type]
         rate_limiter=FakeRateLimiter(),  # type: ignore[arg-type]
-        subscription_service=FakeSubscriptions(),  # type: ignore[arg-type]
         download_queue=FakeQueue(),  # type: ignore[arg-type]
         download_manager=FakeCacheMissDownloadManager(),  # type: ignore[arg-type]
     )
@@ -481,7 +473,6 @@ async def test_tiktok_link_is_automatically_submitted_to_queue(session_and_user)
         media_registry=MediaRegistry.default(),
         metadata_service=metadata_service,  # type: ignore[arg-type]
         rate_limiter=FakeRateLimiter(),  # type: ignore[arg-type]
-        subscription_service=FakeSubscriptions(),  # type: ignore[arg-type]
         download_queue=queue,  # type: ignore[arg-type]
         download_manager=FakeCacheMissDownloadManager(),  # type: ignore[arg-type]
     )
@@ -513,7 +504,6 @@ async def test_instagram_link_is_automatically_submitted_to_queue(session_and_us
         media_registry=MediaRegistry.default(),
         metadata_service=metadata_service,  # type: ignore[arg-type]
         rate_limiter=FakeRateLimiter(),  # type: ignore[arg-type]
-        subscription_service=FakeSubscriptions(),  # type: ignore[arg-type]
         download_queue=queue,  # type: ignore[arg-type]
         download_manager=manager,  # type: ignore[arg-type]
     )
@@ -545,7 +535,6 @@ async def test_pinterest_link_is_automatically_submitted_to_queue(session_and_us
         media_registry=MediaRegistry.default(),
         metadata_service=metadata_service,  # type: ignore[arg-type]
         rate_limiter=FakeRateLimiter(),  # type: ignore[arg-type]
-        subscription_service=FakeSubscriptions(),  # type: ignore[arg-type]
         download_queue=queue,  # type: ignore[arg-type]
         download_manager=manager,  # type: ignore[arg-type]
     )
@@ -578,7 +567,6 @@ async def test_vk_clip_is_automatically_submitted_to_ytdlp_queue(session_and_use
         media_registry=MediaRegistry.default(),
         metadata_service=metadata_service,  # type: ignore[arg-type]
         rate_limiter=FakeRateLimiter(),  # type: ignore[arg-type]
-        subscription_service=FakeSubscriptions(),  # type: ignore[arg-type]
         download_queue=queue,  # type: ignore[arg-type]
         download_manager=manager,  # type: ignore[arg-type]
     )
@@ -609,7 +597,6 @@ async def test_tiktok_short_link_gets_stable_internal_media_id(session_and_user)
         media_registry=MediaRegistry.default(),
         metadata_service=FakeMetadataService(),  # type: ignore[arg-type]
         rate_limiter=FakeRateLimiter(),  # type: ignore[arg-type]
-        subscription_service=FakeSubscriptions(),  # type: ignore[arg-type]
         download_queue=FakeQueue(),  # type: ignore[arg-type]
         download_manager=FakeCacheMissDownloadManager(),  # type: ignore[arg-type]
     )
@@ -636,7 +623,6 @@ async def test_tiktok_complete_bundle_cache_bypasses_queue(session_and_user) -> 
         media_registry=MediaRegistry.default(),
         metadata_service=FakeMetadataService(),  # type: ignore[arg-type]
         rate_limiter=FakeRateLimiter(),  # type: ignore[arg-type]
-        subscription_service=FakeSubscriptions(),  # type: ignore[arg-type]
         download_queue=queue,  # type: ignore[arg-type]
         download_manager=manager,  # type: ignore[arg-type]
     )

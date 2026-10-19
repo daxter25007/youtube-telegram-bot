@@ -9,10 +9,8 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards.quality import quality_keyboard
-from app.bot.keyboards.subscriptions import subscription_keyboard
 from app.config import Settings
 from app.database.models import DownloadRequest, DownloadStatus, User
-from app.database.repositories.channels import ChannelRepository
 from app.database.repositories.downloads import DownloadRepository
 from app.database.repositories.media_cache import MediaCacheRepository
 from app.database.repositories.requests import DownloadRequestRepository
@@ -28,7 +26,6 @@ from app.services.media.models import (
 from app.services.media.registry import MediaRegistry
 from app.services.queue import DownloadQueue, QueueClosedError, UserDownloadLimitError
 from app.services.rate_limit import SlidingWindowRateLimiter
-from app.services.subscriptions import SubscriptionService
 from app.utils.audit import audit_event
 from app.utils.auth import is_admin
 from app.utils.filesize import format_duration
@@ -272,7 +269,6 @@ async def receive_url(
     media_registry: MediaRegistry,
     metadata_service: YtDlpMetadataService,
     rate_limiter: SlidingWindowRateLimiter,
-    subscription_service: SubscriptionService,
     download_queue: DownloadQueue,
     download_manager: DownloadManager,
 ) -> None:
@@ -312,22 +308,6 @@ async def receive_url(
         )
         await message.answer("⏳ Слишком много ссылок. Попробуйте немного позже.")
         return
-    channels = await ChannelRepository(session).active()
-    missing = await subscription_service.missing_channels(bot, message.from_user.id, channels)
-    if missing:
-        audit_event(
-            "media_link_rejected",
-            telegram_user_id=message.from_user.id,
-            source=parsed.source,
-            source_media_id=parsed.media_id,
-            reason="subscription",
-        )
-        await message.answer(
-            "Для использования бота подпишитесь на каналы:",
-            reply_markup=subscription_keyboard(missing),
-        )
-        return
-
     await session.commit()
     status_message = await message.answer("🔎 Получаю информацию о видео...")
     adapter = media_registry.adapter_for(parsed.source)
@@ -435,7 +415,6 @@ async def select_media_option(
     media_registry: MediaRegistry,
     download_queue: DownloadQueue,
     download_manager: DownloadManager,
-    subscription_service: SubscriptionService,
 ) -> None:
     if not isinstance(callback.message, Message) or not callback.data:
         await callback.answer("Недоступное сообщение.", show_alert=True)
@@ -472,24 +451,6 @@ async def select_media_option(
             reason="unavailable",
         )
         await callback.answer("Этот вариант недоступен.", show_alert=True)
-        return
-    channels = await ChannelRepository(session).active()
-    missing = await subscription_service.missing_channels(bot, callback.from_user.id, channels)
-    if missing:
-        audit_event(
-            "download_option_rejected",
-            telegram_user_id=callback.from_user.id,
-            request_id=request.id,
-            source=request.source,
-            source_media_id=request.source_media_id,
-            option=option.key,
-            reason="subscription",
-        )
-        await callback.answer("Сначала подпишитесь на обязательные каналы.", show_alert=True)
-        await callback.message.answer(
-            "Для использования бота подпишитесь на каналы:",
-            reply_markup=subscription_keyboard(missing),
-        )
         return
     await _enqueue_option(
         progress_message=callback.message,

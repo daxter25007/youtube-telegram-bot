@@ -45,11 +45,6 @@ class FakeMessage:
         self.texts.append("__deleted__")
 
 
-class FakeSubscriptions:
-    async def missing_channels(self, bot, user_id, channels):
-        return []
-
-
 class FakeTelegramFiles:
     async def send_artifacts(self, bot, **kwargs):
         artifact = kwargs["package"].artifacts[0]
@@ -246,7 +241,6 @@ async def run_case(
         settings=settings(tmp_path, job_timeout),  # type: ignore[arg-type]
         storage=storage,
         backend_router=downloader,
-        subscriptions=FakeSubscriptions(),  # type: ignore[arg-type]
         telegram_files=telegram_files or FakeTelegramFiles(),  # type: ignore[arg-type]
         bot_username="MyVideoBot",
     )
@@ -289,7 +283,6 @@ async def test_successful_download_is_saved_to_media_cache(tmp_path: Path) -> No
         settings=settings(tmp_path),  # type: ignore[arg-type]
         storage=TempStorage(tmp_path / "jobs"),
         backend_router=SuccessfulDownloader(),  # type: ignore[arg-type]
-        subscriptions=FakeSubscriptions(),  # type: ignore[arg-type]
         telegram_files=CachingTelegramFiles(),  # type: ignore[arg-type]
         bot_username="MyVideoBot",
     )
@@ -346,7 +339,6 @@ async def test_cached_download_is_delivered_and_recorded_without_backend(tmp_pat
         settings=settings(tmp_path),  # type: ignore[arg-type]
         storage=TempStorage(tmp_path / "jobs"),
         backend_router=object(),  # type: ignore[arg-type]
-        subscriptions=FakeSubscriptions(),  # type: ignore[arg-type]
         telegram_files=telegram_files,  # type: ignore[arg-type]
         bot_username="MyVideoBot",
     )
@@ -407,7 +399,6 @@ async def test_invalid_cached_file_is_removed_and_allows_normal_download(tmp_pat
         settings=settings(tmp_path),  # type: ignore[arg-type]
         storage=TempStorage(tmp_path / "jobs"),
         backend_router=object(),  # type: ignore[arg-type]
-        subscriptions=FakeSubscriptions(),  # type: ignore[arg-type]
         telegram_files=InvalidCachedDeliveryTelegramFiles(),  # type: ignore[arg-type]
         bot_username="MyVideoBot",
     )
@@ -459,7 +450,6 @@ async def test_unrelated_bad_request_keeps_valid_cached_file(tmp_path: Path) -> 
         settings=settings(tmp_path),  # type: ignore[arg-type]
         storage=TempStorage(tmp_path / "jobs"),
         backend_router=object(),  # type: ignore[arg-type]
-        subscriptions=FakeSubscriptions(),  # type: ignore[arg-type]
         telegram_files=UnrelatedBadRequestCachedDeliveryTelegramFiles(),  # type: ignore[arg-type]
         bot_username="MyVideoBot",
     )

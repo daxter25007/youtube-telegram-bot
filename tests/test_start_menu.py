@@ -18,8 +18,6 @@ def test_start_menu_is_available_to_administrators() -> None:
     assert callbacks == {
         "admin:stats",
         "admin:users",
-        "admin:downloads",
-        "admin:channels",
         "admin:monitoring",
         "admin:system",
     }

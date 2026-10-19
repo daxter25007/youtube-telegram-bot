@@ -13,7 +13,6 @@ from aiogram.types import Message
 
 from app.config import Settings
 from app.database.models import DownloadStatus
-from app.database.repositories.channels import ChannelRepository
 from app.database.repositories.downloads import DownloadRepository
 from app.database.repositories.media_cache import MediaCacheRepository
 from app.database.repositories.media_manifests import MediaManifestRepository
@@ -38,7 +37,6 @@ from app.services.media.models import (
     MediaPart,
     MediaSource,
 )
-from app.services.subscriptions import SubscriptionService
 from app.services.telegram_files import (
     InvalidCachedPartError,
     TelegramFileService,
@@ -153,7 +151,6 @@ class DownloadManager:
         settings: Settings,
         storage: TempStorage,
         backend_router: MediaBackendRouter,
-        subscriptions: SubscriptionService,
         telegram_files: TelegramFileService,
         bot_username: str,
     ) -> None:
@@ -161,7 +158,6 @@ class DownloadManager:
         self.settings = settings
         self.storage = storage
         self.backend_router = backend_router
-        self.subscriptions = subscriptions
         self.telegram_files = telegram_files
         self.bot_username = bot_username
 
@@ -431,24 +427,6 @@ class DownloadManager:
             title=title,
         )
         try:
-            async with self.database.session() as session:
-                channels = await ChannelRepository(session).active()
-            missing = await self.subscriptions.missing_channels(bot, telegram_user_id, channels)
-            if missing:
-                await self._status(download_id, DownloadStatus.CANCELLED, error_type="subscription")
-                await reporter.update(
-                    "Для загрузки необходимо оставаться подписанным на обязательные каналы.",
-                    force=True,
-                )
-                audit_event(
-                    "download_finished",
-                    telegram_user_id=telegram_user_id,
-                    download_id=download_id,
-                    status=DownloadStatus.CANCELLED,
-                    outcome="subscription_missing",
-                )
-                return
-
             job_dir = await self.storage.create_job()
             async with asyncio.timeout(self.settings.download_timeout_seconds):
                 await self._status(download_id, DownloadStatus.DOWNLOADING)

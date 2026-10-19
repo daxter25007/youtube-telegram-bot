@@ -42,11 +42,6 @@ class FakeMessage:
         self.texts.append("__deleted__")
 
 
-class FakeSubscriptions:
-    async def missing_channels(self, bot, user_id, channels):
-        return []
-
-
 def uploaded(part_key: str, kind: MediaKind, *, document: bool = False) -> UploadResult:
     file = SimpleNamespace(file_id=f"file-{part_key}", file_unique_id=f"unique-{part_key}")
     message = SimpleNamespace(video=None, animation=None, audio=None, photo=None, document=None)
@@ -199,7 +194,6 @@ def manager(database, tmp_path, router, telegram):
         settings=settings(),  # type: ignore[arg-type]
         storage=TempStorage(tmp_path / "jobs"),
         backend_router=router,  # type: ignore[arg-type]
-        subscriptions=FakeSubscriptions(),  # type: ignore[arg-type]
         telegram_files=telegram,  # type: ignore[arg-type]
         bot_username="MyVideoBot",
     )

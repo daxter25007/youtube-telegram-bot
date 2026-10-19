@@ -37,7 +37,6 @@ from app.services.monitoring import MonitoringService, heartbeat_loop
 from app.services.queue import DownloadQueue
 from app.services.rate_limit import SlidingWindowRateLimiter
 from app.services.statistics import StatisticsService
-from app.services.subscriptions import SubscriptionService
 from app.services.telegram_files import TelegramFileService
 from app.utils.logging import configure_logging
 
@@ -143,7 +142,6 @@ async def run() -> int:
         )
 
         cookies = str(settings.ytdlp_cookies_file) if settings.ytdlp_cookies_file else None
-        subscriptions = SubscriptionService()
         media_registry = MediaRegistry.default()
         ytdlp_backend = YtDlpBackend(MediaDownloader(cookies))
         publication_backends = [ytdlp_backend]
@@ -182,7 +180,6 @@ async def run() -> int:
             settings=settings,
             storage=storage,
             backend_router=backend_router,
-            subscriptions=subscriptions,
             telegram_files=TelegramFileService(),
             bot_username=me.username or "",
         )
@@ -203,7 +200,6 @@ async def run() -> int:
                 settings.rate_limit_urls,
                 settings.rate_limit_window_seconds,
             ),
-            subscription_service=subscriptions,
             statistics_service=StatisticsService(),
             download_queue=queue,
             download_manager=manager,
