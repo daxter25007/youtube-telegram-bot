@@ -29,6 +29,7 @@ from app.services.rate_limit import SlidingWindowRateLimiter
 from app.utils.audit import audit_event
 from app.utils.auth import is_admin
 from app.utils.filesize import format_duration
+from app.utils.telegram import edit_text_with_retry
 
 logger = logging.getLogger(__name__)
 router = Router(name="downloader")
@@ -100,7 +101,7 @@ async def _enqueue_option(
             option=option.key,
             reason="stale_option",
         )
-        await progress_message.edit_text("Ссылка или выбранный вариант устарели.")
+        await edit_text_with_retry(progress_message, "Ссылка или выбранный вариант устарели.")
         return
     download = await DownloadRepository(session).create(
         user_id=request.user_id,
@@ -161,7 +162,7 @@ async def _enqueue_option(
             DownloadStatus.FAILED,
             error_type="telegram_api",
         )
-        await progress_message.edit_text("❌ Не удалось отправить файл в Telegram.")
+        await edit_text_with_retry(progress_message, "❌ Не удалось отправить файл в Telegram.")
         audit_event(
             "download_finished",
             level=logging.ERROR,
@@ -175,7 +176,7 @@ async def _enqueue_option(
         return
     await DownloadRepository(session).set_status(download.id, DownloadStatus.QUEUED)
     await session.commit()
-    await progress_message.edit_text("⏳ Загрузка поставлена в очередь")
+    await edit_text_with_retry(progress_message, "⏳ Загрузка поставлена в очередь")
 
     async def run_job() -> None:
         await download_manager.run(
@@ -210,7 +211,7 @@ async def _enqueue_option(
             DownloadStatus.CANCELLED,
             error_type="per_user_limit",
         )
-        await progress_message.edit_text("⏳ Дождитесь завершения текущей загрузки.")
+        await edit_text_with_retry(progress_message, "⏳ Дождитесь завершения текущей загрузки.")
         audit_event(
             "download_queue_rejected",
             telegram_user_id=telegram_user_id,
@@ -225,7 +226,7 @@ async def _enqueue_option(
             DownloadStatus.CANCELLED,
             error_type="shutdown",
         )
-        await progress_message.edit_text("Бот временно завершает работу.")
+        await edit_text_with_retry(progress_message, "Бот временно завершает работу.")
         audit_event(
             "download_queue_rejected",
             telegram_user_id=telegram_user_id,
@@ -240,8 +241,9 @@ async def _enqueue_option(
         position=position,
     )
     if position > settings.max_concurrent_downloads:
-        await progress_message.edit_text(
-            "⏳ Сейчас выполняется несколько загрузок. Ваша загрузка поставлена в очередь."
+        await edit_text_with_retry(
+            progress_message,
+            "⏳ Сейчас выполняется несколько загрузок. Ваша загрузка поставлена в очередь.",
         )
 
 
@@ -323,7 +325,9 @@ async def receive_url(
                 source_media_id=parsed.media_id,
                 reason="timeout",
             )
-            await status_message.edit_text("⌛ Не удалось получить информацию о видео вовремя.")
+            await edit_text_with_retry(
+                status_message, "⌛ Не удалось получить информацию о видео вовремя."
+            )
             return
         except MetadataError as error:
             logger.info(
@@ -339,7 +343,7 @@ async def receive_url(
                 source_media_id=parsed.media_id,
                 reason=error.kind,
             )
-            await status_message.edit_text(_metadata_error_text(error))
+            await edit_text_with_retry(status_message, _metadata_error_text(error))
             return
 
     request = await DownloadRequestRepository(session).create(
@@ -369,10 +373,10 @@ async def receive_url(
             None,
         )
         if option is None:
-            await status_message.edit_text("❌ Не найден подходящий формат видео.")
+            await edit_text_with_retry(status_message, "❌ Не найден подходящий формат видео.")
             return
-        await status_message.edit_text(
-            f"🎬 {metadata.title}\n\n⏱ {format_duration(metadata.duration)}"
+        await edit_text_with_retry(
+            status_message, f"🎬 {metadata.title}\n\n⏱ {format_duration(metadata.duration)}"
         )
         await _enqueue_option(
             progress_message=status_message,
@@ -396,7 +400,8 @@ async def receive_url(
                 media_kind=media_kind,
             )
         )
-    await status_message.edit_text(
+    await edit_text_with_retry(
+        status_message,
         f"🎬 {metadata.title}\n\n🔗 {metadata.source_url}\n\n"
         f"⏱ {format_duration(metadata.duration)}\n\nВыберите качество:",
         reply_markup=quality_keyboard(
