@@ -128,7 +128,7 @@ def pinterest_request() -> MediaDownloadRequest:
     )
 
 
-async def ignore_progress(stage: str, percent: float | None) -> None:
+async def ignore_progress(stage: str, percent: float | None, stats=None) -> None:
     return None
 
 

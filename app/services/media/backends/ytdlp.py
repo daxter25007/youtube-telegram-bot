@@ -92,7 +92,7 @@ class YtDlpBackend:
                     prepared.request.source is MediaSource.PINTEREST
                     and part.media_kind is MediaKind.PHOTO
                 ):
-                    await progress("downloading", None)
+                    await progress("downloading", None, None)
                     package = await self.downloader.download_thumbnail(
                         url=prepared.request.url,
                         job_dir=job_dir,

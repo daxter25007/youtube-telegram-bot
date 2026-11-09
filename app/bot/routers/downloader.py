@@ -5,6 +5,7 @@ from typing import Any
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
+from aiogram.filters import Command
 from aiogram.types import CallbackQuery, LinkPreviewOptions, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -259,6 +260,23 @@ def _metadata_error_text(error: MetadataError) -> str:
     if error.kind is MetadataErrorKind.EXTRACTOR_CHANGED:
         return "❌ TikTok временно не отдаёт видео серверу. Попробуйте позже."
     return "❌ Не удалось получить видео. Возможно, оно удалено, приватное или недоступно."
+
+
+@router.message(Command("cancel"))
+async def cancel_download(message: Message, download_queue: DownloadQueue) -> None:
+    """Отмена активной загрузки пользователя (команда /cancel)."""
+    if not message.from_user:
+        return
+    cancelled = await download_queue.cancel_user_job(message.from_user.id)
+    if cancelled:
+        audit_event(
+            "download_cancel_requested",
+            telegram_user_id=message.from_user.id,
+            chat_id=message.chat.id,
+        )
+        await message.answer("🚫 Отменяю загрузку…")
+    else:
+        await message.answer("У вас нет активной загрузки.")
 
 
 @router.message(F.text)

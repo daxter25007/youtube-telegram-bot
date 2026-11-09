@@ -5,6 +5,7 @@ import json
 import re
 import sys
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from app.services.media.models import (
@@ -16,9 +17,32 @@ from app.services.media.models import (
 from app.services.media.probe import probe_media
 from app.services.media.process import stop_process, subprocess_options
 
-ProgressCallback = Callable[[str, float | None], Awaitable[None]]
-PROGRESS_RE = re.compile(r"__PROGRESS__\s*([0-9]+(?:\.[0-9]+)?)%")
+
+@dataclass(frozen=True, slots=True)
+class ProgressStats:
+    """Дополнительные метрики скачивания; None — yt-dlp не знает значения."""
+
+    downloaded_bytes: int | None = None
+    total_bytes: int | None = None
+    speed_bytes: int | None = None
+
+
+ProgressCallback = Callable[[str, float | None, ProgressStats | None], Awaitable[None]]
+PROGRESS_RE = re.compile(
+    r"__PROGRESS__\s*([0-9]+(?:\.[0-9]+)?)%"
+    r"(?:\|([0-9]+|NA)(?:\|([0-9]+|NA)(?:\|([0-9]+(?:\.[0-9]+)?|NA))?)?)?"
+)
 FILE_PREFIX = "__FILE__"
+
+
+def _progress_value(raw: str | None) -> int | None:
+    # yt-dlp печатает "NA" для неизвестных значений в шаблонах прогресса.
+    if raw is None or raw == "NA":
+        return None
+    try:
+        return int(float(raw))
+    except ValueError:
+        return None
 
 
 class DownloadError(RuntimeError):
@@ -40,7 +64,10 @@ def build_download_command(
         "--newline",
         "--progress",
         "--progress-template",
-        "download:__PROGRESS__%(progress._percent_str)s",
+        "download:__PROGRESS__%(progress._percent_str)s"
+        "|%(progress.downloaded_bytes)s"
+        "|%(progress.total_bytes_estimate)s"
+        "|%(progress.speed)s",
         "--progress-template",
         "postprocess:__POSTPROCESS__%(progress.status)s",
         "--print",
@@ -232,13 +259,21 @@ class MediaDownloader:
                 tail.append(line)
                 tail = tail[-20:]
                 if match := PROGRESS_RE.search(line):
-                    await progress("downloading", float(match.group(1)))
+                    downloaded = _progress_value(match.group(2))
+                    total = _progress_value(match.group(3))
+                    speed = _progress_value(match.group(4))
+                    stats = (
+                        ProgressStats(downloaded, total, speed)
+                        if downloaded is not None or total is not None or speed is not None
+                        else None
+                    )
+                    await progress("downloading", float(match.group(1)), stats)
                 elif (
                     "[Merger]" in line
                     or "[VideoRemuxer]" in line
                     or line.startswith("__POSTPROCESS__")
                 ):
-                    await progress("merging", None)
+                    await progress("merging", None, None)
                 elif line.startswith(FILE_PREFIX):
                     raw_candidate = Path(line.removeprefix(FILE_PREFIX))
                     candidate = await asyncio.to_thread(raw_candidate.resolve)

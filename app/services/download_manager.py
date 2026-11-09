@@ -28,6 +28,7 @@ from app.services.media.backends.base import (
     PreparedMedia,
 )
 from app.services.media.backends.router import MediaBackendRouter
+from app.services.media.downloader import ProgressStats
 from app.services.media.models import (
     QUALITY_SELECTION_SOURCES,
     DownloadPolicy,
@@ -45,6 +46,7 @@ from app.services.telegram_files import (
 )
 from app.utils.audit import audit_event
 from app.utils.filesize import is_too_large
+from app.utils.telegram import edit_text_with_retry
 
 logger = logging.getLogger(__name__)
 PUBLICATION_SOURCES = frozenset({MediaSource.TIKTOK, MediaSource.INSTAGRAM, MediaSource.PINTEREST})
@@ -118,14 +120,15 @@ class ProgressReporter:
         self._last_text = ""
 
     async def update(
-        self, stage: str, percent: float | None = None, *, force: bool = False
+        self,
+        stage: str,
+        percent: float | None = None,
+        stats: ProgressStats | None = None,
+        *,
+        force: bool = False,
     ) -> None:
         if stage == "downloading":
-            text = (
-                f"⬇️ Скачиваю видео: {percent:.0f}%"
-                if percent is not None
-                else "⬇️ Скачиваю видео..."
-            )
+            text = _downloading_text(percent, stats)
         elif stage == "merging":
             text = "🎬 Обрабатываю видео..."
         else:
@@ -141,6 +144,37 @@ class ProgressReporter:
             self._last_text = text
         except TelegramAPIError:
             logger.debug("Progress message could not be edited")
+
+
+def _format_bytes(value: int | None) -> str | None:
+    if not value or value <= 0:
+        return None
+    size = float(value)
+    for unit in ("Б", "КБ", "МБ", "ГБ"):
+        if size < 1024 or unit == "ГБ":
+            return f"{size:.0f} {unit}" if unit == "Б" else f"{size:.1f} {unit}"
+        size /= 1024
+    return None
+
+
+def _downloading_text(percent: float | None, stats: ProgressStats | None) -> str:
+    # Показываем байты и скорость даже при «застывшем» проценте,
+    # чтобы медленная загрузка была отличима от зависшей.
+    chunks: list[str] = []
+    if percent is not None:
+        chunks.append(f"{percent:.0f}%")
+    downloaded = _format_bytes(stats.downloaded_bytes if stats else None)
+    total = _format_bytes(stats.total_bytes if stats else None)
+    if downloaded is not None and total is not None:
+        chunks.append(f"{downloaded} из {total}")
+    elif downloaded is not None:
+        chunks.append(downloaded)
+    speed = _format_bytes(stats.speed_bytes if stats else None)
+    if speed is not None:
+        chunks.append(f"{speed}/с")
+    if not chunks:
+        return "⬇️ Скачиваю видео..."
+    return "⬇️ Скачиваю видео: " + " · ".join(chunks)
 
 
 class DownloadManager:
@@ -431,10 +465,14 @@ class DownloadManager:
             async with asyncio.timeout(self.settings.download_timeout_seconds):
                 await self._status(download_id, DownloadStatus.DOWNLOADING)
 
-                async def progress(stage: str, percent: float | None) -> None:
+                async def progress(
+                    stage: str,
+                    percent: float | None,
+                    stats: ProgressStats | None = None,
+                ) -> None:
                     if stage == "merging":
                         await self._status(download_id, DownloadStatus.MERGING)
-                    await reporter.update(stage, percent)
+                    await reporter.update(stage, percent, stats)
 
                 async def on_fallback(
                     failed: DownloadBackend,
@@ -786,14 +824,21 @@ class DownloadManager:
                 duration_ms=round((time.monotonic() - started) * 1000),
             )
         except asyncio.CancelledError:
+            # Отмена по запросу пользователя (/cancel) или при остановке бота.
             await asyncio.shield(
                 self._status(
                     download_id,
                     DownloadStatus.CANCELLED,
-                    error_type="shutdown",
+                    error_type="cancelled",
                     processing_seconds=time.monotonic() - started,
                 )
             )
+            try:
+                await asyncio.shield(
+                    edit_text_with_retry(progress_message, "🚫 Загрузка отменена.")
+                )
+            except TelegramAPIError:
+                logger.debug("Cancelled progress message could not be edited")
             audit_event(
                 "download_finished",
                 telegram_user_id=telegram_user_id,
@@ -801,7 +846,7 @@ class DownloadManager:
                 source=source,
                 source_media_id=source_media_id,
                 status=DownloadStatus.CANCELLED,
-                outcome="shutdown",
+                outcome="cancelled",
                 duration_ms=round((time.monotonic() - started) * 1000),
             )
             raise

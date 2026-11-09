@@ -5,6 +5,7 @@ import pytest
 from app.services.media.downloader import (
     DownloadError,
     MediaDownloader,
+    ProgressStats,
     build_download_command,
     build_pinterest_inspection_command,
     build_thumbnail_command,
@@ -104,7 +105,8 @@ async def test_downloader_returns_video_package_and_reports_progress(
     output.write_bytes(b"video")
     process = FakeProcess(
         [
-            b"__PROGRESS__ 37.5%\n",
+            b"__PROGRESS__ 37.5%|5242880|68157440|131072\n",
+            b"__PROGRESS__ 40.0%|5767168|68157440|NA\n",
             b"__POSTPROCESS__started\n",
             f"__FILE__{output}\n".encode(),
         ]
@@ -118,10 +120,14 @@ async def test_downloader_returns_video_package_and_reports_progress(
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", fake_subprocess)
     monkeypatch.setattr(MediaDownloader, "_probe", fake_probe)
-    progress: list[tuple[str, float | None]] = []
+    progress: list[tuple[str, float | None, ProgressStats | None]] = []
 
-    async def record(stage: str, percent: float | None) -> None:
-        progress.append((stage, percent))
+    async def record(
+        stage: str,
+        percent: float | None,
+        stats: ProgressStats | None = None,
+    ) -> None:
+        progress.append((stage, percent, stats))
 
     package = await MediaDownloader().download(
         url="https://vm.tiktok.com/ZM123abc/",
@@ -130,7 +136,11 @@ async def test_downloader_returns_video_package_and_reports_progress(
         progress=record,
     )
 
-    assert progress == [("downloading", 37.5), ("merging", None)]
+    assert progress == [
+        ("downloading", 37.5, ProgressStats(5242880, 68157440, 131072)),
+        ("downloading", 40.0, ProgressStats(5767168, 68157440, None)),
+        ("merging", None, None),
+    ]
     assert len(package.artifacts) == 1
     artifact = package.artifacts[0]
     assert artifact.path == output
@@ -151,7 +161,11 @@ async def test_downloader_rejects_reported_path_outside_job_directory(
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", fake_subprocess)
 
-    async def ignore_progress(stage: str, percent: float | None) -> None:
+    async def ignore_progress(
+        stage: str,
+        percent: float | None,
+        stats: ProgressStats | None = None,
+    ) -> None:
         return None
 
     with pytest.raises(DownloadError, match="job"):

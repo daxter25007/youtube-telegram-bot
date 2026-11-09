@@ -75,7 +75,7 @@ async def test_tiktok_audio_failure_keeps_downloaded_video(tmp_path: Path) -> No
     )
     prepared = await backend.prepare(request)
 
-    async def progress(stage: str, percent: float | None) -> None:
+    async def progress(stage: str, percent: float | None, stats=None) -> None:
         return None
 
     package = await backend.download_prepared(
@@ -99,7 +99,7 @@ async def test_instagram_audio_failure_keeps_downloaded_video(tmp_path: Path) ->
     )
     prepared = await backend.prepare(request)
 
-    async def progress(stage: str, percent: float | None) -> None:
+    async def progress(stage: str, percent: float | None, stats=None) -> None:
         return None
 
     package = await backend.download_prepared(
@@ -125,7 +125,7 @@ async def test_pinterest_video_fallback_keeps_video_when_audio_is_unavailable(
     )
     prepared = await backend.prepare(request)
 
-    async def progress(stage: str, percent: float | None) -> None:
+    async def progress(stage: str, percent: float | None, stats=None) -> None:
         return None
 
     package = await backend.download_prepared(
@@ -149,7 +149,7 @@ async def test_pinterest_fallback_selects_video_only_stream(tmp_path: Path) -> N
     )
     prepared = await backend.prepare(request)
 
-    async def progress(stage: str, percent: float | None) -> None:
+    async def progress(stage: str, percent: float | None, stats=None) -> None:
         return None
 
     package = await backend.download_prepared(
@@ -175,7 +175,7 @@ async def test_pinterest_photo_fallback_prepares_and_downloads_photo(tmp_path: P
     )
     prepared = await backend.prepare(request)
 
-    async def progress(stage: str, percent: float | None) -> None:
+    async def progress(stage: str, percent: float | None, stats=None) -> None:
         return None
 
     package = await backend.download_prepared(

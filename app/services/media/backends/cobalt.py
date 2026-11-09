@@ -6,6 +6,7 @@ import ipaddress
 import logging
 import re
 import socket
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol
@@ -29,7 +30,7 @@ from app.services.media.backends.base import (
     MediaPartFailure,
     PreparedMedia,
 )
-from app.services.media.downloader import ProgressCallback
+from app.services.media.downloader import ProgressCallback, ProgressStats
 from app.services.media.models import (
     MediaArtifact,
     MediaKind,
@@ -423,6 +424,7 @@ class CobaltBackend:
                     "Не удалось создать временный файл", kind=BackendErrorKind.FILESYSTEM
                 ) from exc
             written = 0
+            stream_started = time.monotonic()
             try:
                 async for chunk in response.content.iter_chunked(CHUNK_SIZE):
                     written += len(chunk)
@@ -432,7 +434,17 @@ class CobaltBackend:
                         )
                     await asyncio.to_thread(file_handle.write, chunk)
                     percent = min(100.0, written * 100 / declared_size) if declared_size else None
-                    await progress("downloading", percent)
+                    elapsed = time.monotonic() - stream_started
+                    speed = int(written / elapsed) if elapsed > 0 else None
+                    await progress(
+                        "downloading",
+                        percent,
+                        ProgressStats(
+                            downloaded_bytes=written,
+                            total_bytes=declared_size,
+                            speed_bytes=speed,
+                        ),
+                    )
             except BackendError:
                 raise
             except (ClientError, OSError, TimeoutError) as exc:

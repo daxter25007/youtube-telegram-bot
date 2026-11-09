@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.bot.keyboards.quality import quality_keyboard
-from app.bot.routers.downloader import _enqueue_option, receive_url
+from app.bot.routers.downloader import _enqueue_option, cancel_download, receive_url
 from app.database.base import Base
 from app.database.models import Download, DownloadRequest, DownloadStatus, User
 from app.database.repositories.media_cache import MediaCacheRepository
@@ -637,3 +637,40 @@ async def test_tiktok_complete_bundle_cache_bypasses_queue(session_and_user) -> 
 
     assert manager.calls == 1
     assert queue.submissions == []
+
+
+class FakeCancelQueue:
+    def __init__(self, cancelled: bool) -> None:
+        self.cancelled = cancelled
+        self.requested_ids: list[int] = []
+
+    async def cancel_user_job(self, user_id: int) -> bool:
+        self.requested_ids.append(user_id)
+        return self.cancelled
+
+
+class FakeCancelMessage:
+    def __init__(self) -> None:
+        self.from_user = SimpleNamespace(id=123)
+        self.chat = SimpleNamespace(id=123)
+        self.answers: list[str] = []
+
+    async def answer(self, text: str, reply_markup=None):
+        self.answers.append(text)
+
+
+@pytest.mark.asyncio
+async def test_cancel_download_confirms_when_job_active() -> None:
+    queue = FakeCancelQueue(cancelled=True)
+    message = FakeCancelMessage()
+    await cancel_download(message, download_queue=queue)  # type: ignore[arg-type]
+    assert queue.requested_ids == [123]
+    assert message.answers == ["🚫 Отменяю загрузку…"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_download_reports_no_active_job() -> None:
+    queue = FakeCancelQueue(cancelled=False)
+    message = FakeCancelMessage()
+    await cancel_download(message, download_queue=queue)  # type: ignore[arg-type]
+    assert message.answers == ["У вас нет активной загрузки."]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
@@ -33,6 +34,7 @@ class DownloadQueue:
         self._queue: asyncio.Queue[QueueJob | None] = asyncio.Queue()
         self._semaphore = asyncio.Semaphore(concurrency)
         self._user_counts: dict[int, int] = defaultdict(int)
+        self._active: dict[int, set[asyncio.Task[None]]] = defaultdict(set)
         self._workers: list[asyncio.Task[None]] = []
         self._lock = asyncio.Lock()
         self._accepting = False
@@ -80,9 +82,19 @@ class DownloadQueue:
             if job is None:
                 self._queue.task_done()
                 return
+            task = asyncio.create_task(self._run_job(job), name=f"download-job-{job.user_id}")
             try:
-                async with self._semaphore:
-                    await job.run()
+                await task
+            except asyncio.CancelledError:
+                # Либо пользователь отменил загрузку (отмена дочерней задачи),
+                # либо останавливается сам воркер — во втором случае отменяем и job.
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+                logger.info("Download job cancelled by request user_id=%s", job.user_id)
             except Exception:
                 logger.exception("Unhandled exception in queued download job")
             finally:
@@ -91,6 +103,29 @@ class DownloadQueue:
                     if self._user_counts[job.user_id] <= 0:
                         self._user_counts.pop(job.user_id, None)
                 self._queue.task_done()
+
+    async def _run_job(self, job: QueueJob) -> None:
+        async with self._semaphore:
+            task = asyncio.current_task()
+            if task is not None:
+                async with self._lock:
+                    self._active[job.user_id].add(task)
+            try:
+                await job.run()
+            finally:
+                if task is not None:
+                    async with self._lock:
+                        self._active[job.user_id].discard(task)
+                        if not self._active[job.user_id]:
+                            self._active.pop(job.user_id, None)
+
+    async def cancel_user_job(self, user_id: int) -> bool:
+        """Отменяет активные загрузки пользователя; True — если было что отменять."""
+        async with self._lock:
+            tasks = list(self._active.get(user_id, ()))
+        for task in tasks:
+            task.cancel()
+        return bool(tasks)
 
     async def stop(self) -> None:
         self._accepting = False
