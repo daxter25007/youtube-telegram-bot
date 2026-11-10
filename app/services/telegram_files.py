@@ -76,7 +76,14 @@ def _invalid_file_id(error: TelegramBadRequest) -> bool:
     text = str(error).casefold()
     return any(
         marker in text
-        for marker in ("wrong file identifier", "invalid file id", "file reference expired")
+        # Облачный Bot API: "wrong file identifier specified";
+        # локальный telegram-bot-api: "wrong file_id or the file is temporarily unavailable".
+        for marker in (
+            "wrong file identifier",
+            "wrong file_id",
+            "invalid file id",
+            "file reference expired",
+        )
     )
 
 

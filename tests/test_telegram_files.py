@@ -7,7 +7,12 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InputMediaPhoto, InputMediaVideo
 
 from app.services.media.models import MediaArtifact, MediaKind, MediaPackage
-from app.services.telegram_files import TelegramFileService, TelegramPhotoInput, UploadResult
+from app.services.telegram_files import (
+    InvalidCachedPartError,
+    TelegramFileService,
+    TelegramPhotoInput,
+    UploadResult,
+)
 
 
 def telegram_message(kind: MediaKind, file_id: str):
@@ -275,6 +280,46 @@ async def test_cached_file_is_resent_using_original_type(
     assert bot.calls[0][0] == method
     assert bot.calls[0][2]["parse_mode"] is ParseMode.HTML
     assert result.part_key == "part"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        # Облачный Bot API и устаревший file reference.
+        "Bad Request: wrong file identifier specified",
+        "Bad Request: file reference expired",
+        # Локальный telegram-bot-api — собственная формулировка (поймали в E2E 2026-11-10).
+        "Bad Request: wrong file_id or the file is temporarily unavailable",
+    ],
+)
+async def test_validate_cached_maps_invalid_file_id_to_cache_miss(message: str) -> None:
+    class RejectingBot:
+        async def get_file(self, file_id: str):
+            raise TelegramBadRequest(method=SimpleNamespace(), message=message)
+
+    with pytest.raises(InvalidCachedPartError):
+        await TelegramFileService().validate_cached(
+            RejectingBot(),  # type: ignore[arg-type]
+            part_key="video",
+            file_id="stale-file-id",
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_cached_reraises_unrelated_bad_request() -> None:
+    class RejectingBot:
+        async def get_file(self, file_id: str):
+            raise TelegramBadRequest(
+                method=SimpleNamespace(), message="Bad Request: chat not found"
+            )
+
+    with pytest.raises(TelegramBadRequest):
+        await TelegramFileService().validate_cached(
+            RejectingBot(),  # type: ignore[arg-type]
+            part_key="video",
+            file_id="stale-file-id",
+        )
 
 
 def test_upload_result_reads_file_for_each_media_kind() -> None:
